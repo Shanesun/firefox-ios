@@ -95,7 +95,7 @@ class LeanplumIntegration {
         switch settings.environment {
         case .development:
             log.info("LeanplumIntegration - Setting up for Development")
-            Leanplum.setDeviceId(ASIdentifierManager.shared().advertisingIdentifier.uuidString)
+            Leanplum.setDeviceId(UIDevice.current.identifierForVendor?.uuidString)
             Leanplum.setAppId(settings.appId, withDevelopmentKey: settings.key)
         case .production:
             log.info("LeanplumIntegration - Setting up for Production")
