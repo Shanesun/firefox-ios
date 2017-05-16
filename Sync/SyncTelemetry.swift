@@ -222,6 +222,8 @@ public struct SyncPing: TelemetryPing {
                 var singleSync = syncStats.asDictionary()
                 if let engineResults = result.engineResults.successValue {
                     singleSync["engines"] = SyncPing.enginePingDataFrom(engineResults: engineResults)
+                } else if let failure = result.engineResults.failureValue {
+                    ping["failureReason"] = String(describing: failure)
                 }
 
                 ping["syncs"] = [singleSync]
