@@ -223,7 +223,11 @@ public struct SyncPing: TelemetryPing {
                 if let engineResults = result.engineResults.successValue {
                     singleSync["engines"] = SyncPing.enginePingDataFrom(engineResults: engineResults)
                 } else if let failure = result.engineResults.failureValue {
-                    ping["failureReason"] = String(describing: failure)
+                    // Capture sync-level failures here. Engine failures are stored in each engine's session.
+                    ping["failureReason"] = [
+                        "name": "\(type(of: failure))",
+                        "error": String(describing: failure)
+                    ]
                 }
 
                 ping["syncs"] = [singleSync]
