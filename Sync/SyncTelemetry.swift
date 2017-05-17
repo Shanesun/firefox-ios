@@ -118,7 +118,6 @@ public class StatsSession {
 
 // Stats about a single engine's sync.
 public class SyncEngineStatsSession: StatsSession {
-    public var failureReason: Any?
     public var validationStats: ValidationStats?
 
     private(set) var uploadStats: SyncUploadStats
@@ -223,7 +222,6 @@ public struct SyncPing: TelemetryPing {
                 if let engineResults = result.engineResults.successValue {
                     singleSync["engines"] = SyncPing.enginePingDataFrom(engineResults: engineResults)
                 } else if let failure = result.engineResults.failureValue {
-                    // Capture sync-level failures here. Engine failures are stored in each engine's session.
                     ping["failureReason"] = [
                         "name": "\(type(of: failure))",
                         "error": String(describing: failure)
