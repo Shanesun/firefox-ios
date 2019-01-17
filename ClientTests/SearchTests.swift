@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import Foundation
 import GCDWebServers
 @testable import Client
 import UIKit
@@ -12,12 +11,12 @@ import XCTest
 class SearchTests: XCTestCase {
     func testParsing() {
         let parser = OpenSearchParser(pluginMode: true)
-        let file = Bundle.main.path(forResource: "google", ofType: "xml", inDirectory: "SearchPlugins/en")
-        let engine: OpenSearchEngine! = parser.parse(file!, engineID: "google")
+        let file = Bundle.main.path(forResource: "google-b-m", ofType: "xml", inDirectory: "SearchPlugins/")
+        let engine: OpenSearchEngine! = parser.parse(file!, engineID: "google-b-m")
         XCTAssertEqual(engine.shortName, "Google")
 
         // Test regular search queries.
-        XCTAssertEqual(engine.searchURLForQuery("foobar")!.absoluteString, "https://www.google.com/search?q=foobar&ie=utf-8&oe=utf-8&client=firefox-b")
+        XCTAssertEqual(engine.searchURLForQuery("foobar")!.absoluteString, "https://www.google.com/search?q=foobar&ie=utf-8&oe=utf-8&client=firefox-b-m")
 
         // Test search suggestion queries.
         XCTAssertEqual(engine.suggestURLForQuery("foobar")!.absoluteString, "https://www.google.com/complete/search?client=firefox&q=foobar")
@@ -34,9 +33,6 @@ class SearchTests: XCTestCase {
         checkValidURL("foo.bar", afterFixup: "http://foo.bar")
         checkValidURL(" foo.bar ", afterFixup: "http://foo.bar")
         checkValidURL("1.2.3", afterFixup: "http://1.2.3")
-        checkValidURL("http://创业咖啡.中国/", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s/")
-        checkValidURL("创业咖啡.中国", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s")
-        checkValidURL(" 创业咖啡.中国 ", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s")
 
         // Check invalid URLs. These are passed along to the default search engine.
         checkInvalidURL("foobar")
@@ -47,6 +43,12 @@ class SearchTests: XCTestCase {
         checkInvalidURL("创业咖啡")
         checkInvalidURL("创业咖啡 中国")
         checkInvalidURL("创业咖啡. 中国")
+    }
+
+    func testURIFixupPunyCode() {
+        checkValidURL("http://创业咖啡.中国/", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s/")
+        checkValidURL("创业咖啡.中国", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s")
+        checkValidURL(" 创业咖啡.中国 ", afterFixup: "http://xn--vhq70hq9bhxa.xn--fiqs8s")
     }
 
     fileprivate func checkValidURL(_ beforeFixup: String, afterFixup: String) {
@@ -98,7 +100,7 @@ class SearchTests: XCTestCase {
 
     func testExtractingOfSearchTermsFromURL() {
         let parser = OpenSearchParser(pluginMode: true)
-        var file = Bundle.main.path(forResource: "google", ofType: "xml", inDirectory: "SearchPlugins/en")
+        var file = Bundle.main.path(forResource: "google-b-m", ofType: "xml", inDirectory: "SearchPlugins/")
         let googleEngine: OpenSearchEngine! = parser.parse(file!, engineID: "google")
 
         // create URL
@@ -115,7 +117,7 @@ class SearchTests: XCTestCase {
         XCTAssertNil(googleEngine.queryForSearchURL(invalidSearchURL))
 
         // check that it matches given a different configuration
-        file = Bundle.main.path(forResource: "duckduckgo", ofType: "xml", inDirectory: "SearchPlugins/en")
+        file = Bundle.main.path(forResource: "duckduckgo", ofType: "xml", inDirectory: "SearchPlugins/")
         let duckDuckGoEngine: OpenSearchEngine! = parser.parse(file!, engineID: "duckduckgo")
         XCTAssertEqual(searchTerm, duckDuckGoEngine.queryForSearchURL(duckDuckGoSearchURL))
 
@@ -129,7 +131,7 @@ class SearchTests: XCTestCase {
     fileprivate func startMockSuggestServer() -> String {
         let webServer: GCDWebServer = GCDWebServer()
 
-        webServer.addHandler(forMethod: "GET", path: "/", request: GCDWebServerRequest.self) { (request) -> GCDWebServerResponse! in
+        webServer.addHandler(forMethod: "GET", path: "/", request: GCDWebServerRequest.self) { (request) -> GCDWebServerResponse? in
             var suggestions: [String]!
             let query = request?.query["q"] as! String
             switch query {

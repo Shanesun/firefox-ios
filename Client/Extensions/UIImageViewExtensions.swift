@@ -4,26 +4,35 @@
 
 import UIKit
 import Storage
-import WebImage
+import SDWebImage
 import Shared
 
 public extension UIImageView {
 
-    public func setIcon(_ icon: Favicon?, forURL url: URL?, completed completionBlock: ((UIColor, URL?) -> Void)? = nil ) {
-        if let siteURL = url?.baseDomain, let defaultIcon = FaviconFetcher.defaultIcons[siteURL] {
-            self.image = UIImage(contentsOfFile: defaultIcon.url)
-            self.backgroundColor = defaultIcon.color
-            completionBlock?(defaultIcon.color, url)
+    public func setIcon(_ icon: Favicon?, forURL url: URL?, completed completion: ((UIColor, URL?) -> Void)? = nil ) {
+        func finish(filePath: String?, bgColor: UIColor) {
+            if let filePath = filePath {
+                self.image = UIImage(contentsOfFile: filePath)
+            }
+            // If the background color is clear, we may decide to set our own background based on the theme.
+            let color = bgColor.components.alpha < 0.01 ? UIColor.theme.general.faviconBackground : bgColor
+            self.backgroundColor = color
+            completion?(color, url)
+        }
+
+        if let url = url, let defaultIcon = FaviconFetcher.getDefaultIconForURL(url: url) {
+            finish(filePath: defaultIcon.url, bgColor: defaultIcon.color)
         } else {
             let imageURL = URL(string: icon?.url ?? "")
             let defaults = defaultFavicon(url)
             self.sd_setImage(with: imageURL, placeholderImage: defaults.image, options: []) {(img, err, _, _) in
                 guard let image = img, let dUrl = url, err == nil else {
-                    self.backgroundColor = defaults.color
-                    completionBlock?(defaults.color, url)
+                    finish(filePath: nil, bgColor: defaults.color)
                     return
                 }
-                self.color(forImage: image, andURL: dUrl, completed: completionBlock)
+                self.color(forImage: image, andURL: dUrl) { color in
+                    finish(filePath: nil, bgColor: color)
+                }
             }
         }
     }
@@ -31,24 +40,24 @@ public extension UIImageView {
    /*
     * Fetch a background color for a specfic favicon UIImage. It uses the URL to store the UIColor in memory for subsequent requests.
     */
-    private func color(forImage image: UIImage, andURL url: URL, completed completionBlock: ((UIColor, URL?) -> Void)? = nil) {
+    private func color(forImage image: UIImage, andURL url: URL, completed completionBlock: ((UIColor) -> Void)? = nil) {
         guard let domain = url.baseDomain else {
-            self.backgroundColor = .gray
-            completionBlock?(UIColor.gray, url)
+            self.backgroundColor = UIColor.Photon.Grey50
+            completionBlock?(UIColor.Photon.Grey50)
             return
         }
 
         if let color = FaviconFetcher.colors[domain] {
             self.backgroundColor = color
-            completionBlock?(color, url)
+            completionBlock?(color)
         } else {
             image.getColors(scaleDownSize: CGSize(width: 25, height: 25)) {colors in
                 let isSame = [colors.primary, colors.secondary, colors.detail].every { $0 == colors.primary }
                 if isSame {
-                    completionBlock?(UIColor.white, url)
-                    FaviconFetcher.colors[domain] = UIColor.white
+                    completionBlock?(UIColor.Photon.White100)
+                    FaviconFetcher.colors[domain] = UIColor.Photon.White100
                 } else {
-                    completionBlock?(colors.background, url)
+                    completionBlock?(colors.background)
                     FaviconFetcher.colors[domain] = colors.background
                 }
             }
@@ -72,58 +81,11 @@ open class ImageOperation: NSObject, SDWebImageOperation {
     open var cacheOperation: Operation?
 
     var cancelled: Bool {
-        if let cacheOperation = cacheOperation {
-            return cacheOperation.isCancelled
-        }
-        return false
+        return cacheOperation?.isCancelled ?? false
     }
 
     @objc open func cancel() {
-        if let cacheOperation = cacheOperation {
-            cacheOperation.cancel()
-        }
+        cacheOperation?.cancel()
     }
 }
 
-// This is an extension to SDWebImage's api to allow passing in a cache to be used for lookup.
-public typealias CompletionBlock = (_ img: UIImage?, _ err: NSError, _ type: SDImageCacheType, _ key: String) -> Void
-extension UIImageView {
-    // This is a helper function for custom async loaders. It starts an operation that will check for the image in
-    // a cache (either one passed in or the default if none is specified). If its found in the cache its returned,
-    // otherwise, block is run and should return an image to show.
-    fileprivate func runBlockIfNotInCache(_ key: String, cache: SDImageCache, completed: @escaping CompletionBlock, block: @escaping () -> UIImage?) {
-        self.sd_cancelCurrentImageLoad()
-
-        let operation = ImageOperation()
-
-        operation.cacheOperation = cache.queryDiskCache(forKey: key, done: { (image, cacheType) -> Void in
-            let err = NSError(domain: "UIImage+Extensions.runBlockIfNotInCache", code: 0, userInfo: nil)
-            // If this was cancelled, don't bother notifying the caller
-            if operation.cancelled {
-                return
-            }
-
-            // If it was found in the cache, we can just use it
-            if let image = image {
-                self.image = image
-                self.setNeedsLayout()
-            } else {
-                // Otherwise, the block has a chance to load it
-                let image = block()
-                if image != nil {
-                    self.image = image
-                    cache.store(image, forKey: key)
-                }
-            }
-
-            completed(image, err, cacheType, key)
-        })
-
-        self.sd_setImageLoadOperation(operation, forKey: "UIImageViewImageLoad")
-    }
-
-    public func moz_getImageFromCache(_ key: String, cache: SDImageCache, completed: @escaping CompletionBlock) {
-        // This cache is filled outside of here. If we don't find the key in it, nothing to do here.
-        runBlockIfNotInCache(key, cache: cache, completed: completed) { _ in return nil}
-    }
-}

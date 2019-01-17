@@ -1,68 +1,37 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
- License, v. 2.0. If a copy of the MPL was not distributed with this
- file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import XCTest
 
-class NoImageTests: BaseTestCase {
-    
-    var navigator: Navigator!
-    var app: XCUIApplication!
+let NoImageButtonIdentifier = "menu-NoImageMode"
+let ContextMenuIdentifier = "Context Menu"
 
-    override func setUp() {
-        super.setUp()
-        app = XCUIApplication()
-        navigator = createScreenGraph(app).navigator(self)
-    }
-    
-    override func tearDown() {
-        navigator = nil
-        app = nil
-        super.tearDown()
-    }
-    
-    private func showImages() {
-        app.buttons["TabToolbar.menuButton"].tap()
-        app.collectionViews.containing(.cell, identifier:"FindInPageMenuItem").element.swipeLeft()
-        let collectionViewsQuery = app.collectionViews
-        collectionViewsQuery.cells["ShowImageModeMenuItem"].tap()
-    }
-    
-    private func hideImages() {
-        app.buttons["TabToolbar.menuButton"].tap()
-        app.collectionViews.containing(.cell, identifier:"FindInPageMenuItem").element.swipeLeft()
-        let collectionViewsQuery = app.collectionViews
-        collectionViewsQuery.cells["HideImageModeMenuItem"].tap()
-    }
-    
+class NoImageTests: BaseTestCase {
+
     private func checkShowImages() {
-        navigator.goto(BrowserTabMenu)
-        app.collectionViews.containing(.cell, identifier:"FindInPageMenuItem").element.swipeLeft()
-        waitforExistence(app.collectionViews.cells["ShowImageModeMenuItem"])
-        navigator.goto(BrowserTab)
+        waitForExistence(app.tables.cells[NoImageButtonIdentifier])
+        XCTAssertTrue(app.tables.cells[NoImageButtonIdentifier].images["enabled"].exists)
     }
-    
+
     private func checkHideImages() {
-        navigator.goto(BrowserTabMenu)
-        app.collectionViews.containing(.cell, identifier:"FindInPageMenuItem").element.swipeLeft()
-        waitforExistence(app.collectionViews.cells["HideImageModeMenuItem"])
-        navigator.goto(BrowserTab)
+        waitForExistence(app.tables.cells[NoImageButtonIdentifier])
+        XCTAssertTrue(app.tables.cells[NoImageButtonIdentifier].images["disabled"].exists)
     }
-    
-    func testBrowseUI() {
-        let url1 = "www.google.com"
-        
+
+    // Functionality is tested by UITests/NoImageModeTests, here only the UI is updated properly
+    // Since it is tested in UI let's disable. Keeping here just in case it needs to be re-enabled
+    func testImageOnOff() {
         // Go to a webpage, and select no images or hide images, check it's hidden or not
-        navigator.openNewURL(urlString: url1)
-        hideImages()
+        navigator.openNewURL(urlString: "www.google.com")
+        waitUntilPageLoad()
+
+        // Select hide images, and check the UI is updated
+        navigator.performAction(Action.ToggleNoImageMode)
         checkShowImages()
-        
-        // Load a same page on a new tab, check images are hidden
-        //navigator.goto(NewTabScreen)
-        navigator.openNewURL(urlString: url1)
-        
-        // Open it, then select show images it, and check it's showing the images
-        showImages()
+
+        // Select show images, and check the UI is updated
+        navigator.performAction(Action.ToggleNoImageMode)
         checkHideImages()
     }
 }

@@ -8,48 +8,49 @@ import WebKit
 
 class ReadingListTests: KIFTestCase, UITextFieldDelegate {
     fileprivate var webRoot: String!
-    
+
     override func setUp() {
         super.setUp()
         // We undo the localhost/127.0.0.1 switch in order to get 'localhost' in accessibility labels.
         webRoot = SimplePageServer.start()
-            .replacingOccurrences(of: "127.0.0.1", with: "localhost", options: NSString.CompareOptions(), range: nil)
+            .replacingOccurrences(of: "127.0.0.1", with: "localhost")
+        BrowserUtils.configEarlGrey()
         BrowserUtils.dismissFirstRunUI()
     }
-    
+
     func enterUrl(url: String) {
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("url")).perform(grey_tap())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("address")).perform(grey_typeText("\(url)\n"))
+        EarlGrey.selectElement(with: grey_accessibilityID("url")).perform(grey_tap())
+        EarlGrey.selectElement(with: grey_accessibilityID("address")).perform(grey_replaceText(url))
+        EarlGrey.selectElement(with: grey_accessibilityID("address")).perform(grey_typeText("\n"))
     }
-    
+
     func waitForReadingList() {
-        let readingList = GREYCondition(name: "wait until Reading List Add btn appears", block: { _ in
+        let readingList = GREYCondition(name: "wait until Reading List Add btn appears", block: {
             var errorOrNil: NSError?
             let matcher = grey_allOf([grey_accessibilityLabel("Add to Reading List"),
                                               grey_sufficientlyVisible()])
-            EarlGrey.select(elementWithMatcher: matcher)
+            EarlGrey.selectElement(with: matcher)
                 .assert(grey_notNil(), error: &errorOrNil)
             let success = errorOrNil == nil
             return success
         }).wait(withTimeout: 20)
-        
+
         GREYAssertTrue(readingList, reason: "Can't be added to Reading List")
     }
-    
+
     func waitForEmptyReadingList() {
-        let readable = GREYCondition(name: "Check readable list is empty", block: { _ in
-            var errorOrNil: NSError?
-            let matcher = grey_allOf([grey_accessibilityLabel("Readable page"),
+        let readable = GREYCondition(name: "Check readable list is empty", block: {
+            var error: NSError?
+            let matcher = grey_allOf([grey_accessibilityLabel("Save pages to your Reading List by tapping the book plus icon in the Reader View controls."),
                                               grey_sufficientlyVisible()])
-            EarlGrey.select(elementWithMatcher: matcher)
-                .assert(grey_notNil(), error: &errorOrNil)
-            
-            let success = errorOrNil != nil
-            return success
+            EarlGrey.selectElement(with: matcher)
+                .assert(grey_notNil(), error: &error)
+
+            return error == nil
         }).wait(withTimeout: 10)
         GREYAssertTrue(readable, reason: "Read list should not appear")
     }
-    
+
     /**
      * Tests opening reader mode pages from the urlbar and reading list.
      */
@@ -58,105 +59,109 @@ class ReadingListTests: KIFTestCase, UITextFieldDelegate {
         let url1 = "\(webRoot!)/readablePage.html"
         enterUrl(url: url1)
         tester().waitForWebViewElementWithAccessibilityLabel("Readable Page")
-        
+
         // Add it to the reading list
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Reader View"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Reader View"))
             .perform(grey_tap())
         waitForReadingList()
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Add to Reading List"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Add to Reading List"))
             .perform(grey_tap())
-        
+
         // Open a new page
         let url2 = "\(webRoot!)/numberedPage.html?page=1"
         enterUrl(url: url2)
         tester().waitForWebViewElementWithAccessibilityLabel("Page 1")
-        
+
         // Check that it appears in the reading list home panel
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("url"))
-            .perform(grey_tap())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Reading list"))
-            .perform(grey_tap())
-        
+        BrowserUtils.openLibraryMenu(tester())
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.ReadingList")
+
         // Tap to open it
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("localhost"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("localhost"))
             .perform(grey_tap())
         tester().waitForWebViewElementWithAccessibilityLabel("Readable page")
-        
+
         // Remove it from the reading list
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Remove from Reading List"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Remove from Reading List"))
             .perform(grey_tap())
-        
+
         // Check that it no longer appears in the reading list home panel
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("url"))
-            .perform(grey_tap())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Reading list"))
-            .perform(grey_tap())
-        
+        BrowserUtils.openLibraryMenu(tester())
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.Bookmarks")
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.ReadingList")
         waitForEmptyReadingList()
-        
-        EarlGrey.select(elementWithMatcher:
-            grey_allOf([grey_accessibilityLabel("Cancel"),
-                                grey_accessibilityTrait(UIAccessibilityTraitButton),
-                                grey_sufficientlyVisible()]))
-            .perform(grey_tap())
+
+        // Close the menu
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.Bookmarks")
+        BrowserUtils.closeLibraryMenu(tester())
     }
-    
+
     func testReadingListAutoMarkAsRead() {
         // Load a page
         let url1 = "\(webRoot!)/readablePage.html"
-        
+
         enterUrl(url: url1)
         tester().waitForWebViewElementWithAccessibilityLabel("Readable Page")
-        
+
         // Add it to the reading list
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Reader View"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Reader View"))
             .perform(grey_tap())
         waitForReadingList()
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Add to Reading List"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Add to Reading List"))
             .perform(grey_tap())
-        
+
         // Check that it appears in the reading list home panel and make sure it marked as unread
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("url"))
-            .perform(grey_tap())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Reading list"))
-            .perform(grey_tap())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("MarkAsRead"))
-            .inRoot(grey_kindOfClass(NSClassFromString("UITableViewCellContentView")!))
-            .assert(grey_notNil())
+        BrowserUtils.openLibraryMenu(tester())
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.ReadingList")
+
+        tester().waitForView(withAccessibilityLabel: "Readable page, unread, localhost")
         // Select to Read
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("localhost"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("localhost"))
             .perform(grey_tap())
         tester().waitForWebViewElementWithAccessibilityLabel("Readable page")
-        
+
         // Go back to the reading list panel
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("url"))
-            .perform(grey_tap())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Reading list"))
-            .perform(grey_tap())
-        
+        BrowserUtils.openLibraryMenu(tester())
+
+        // Workaround bug 1508368
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.Bookmarks")
+        tester().tapView(withAccessibilityIdentifier: "HomePanels.ReadingList")
+
         // Make sure the article is marked as read
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Readable page"))
-            .assert(grey_notNil())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityID("MarkAsUnread"))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Readable page"))
             .inRoot(grey_kindOfClass(NSClassFromString("UITableViewCellContentView")!))
             .assert(grey_notNil())
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("localhost"))
+        tester().waitForView(withAccessibilityLabel: "Readable page, read, localhost")
+        EarlGrey.selectElement(with: grey_accessibilityLabel("localhost"))
             .assert(grey_notNil())
-        
+
         // Remove the list entry
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Readable page"))
-            .perform(grey_swipeSlowInDirection(GREYDirection.left))
-        EarlGrey.select(elementWithMatcher: grey_accessibilityLabel("Remove"))
-            .inRoot(grey_kindOfClass(NSClassFromString("_UITableViewCellActionButton")!))
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Readable page"))
+            .inRoot(grey_kindOfClass(NSClassFromString("UITableViewCellContentView")!))
+            .perform(grey_swipeSlowInDirectionWithStartPoint(GREYDirection.left, 0.1, 0.1))
+
+        EarlGrey.selectElement(with: grey_accessibilityLabel("Remove"))
+            .inRoot(grey_kindOfClass(NSClassFromString("UISwipeActionStandardButton")!))
             .perform(grey_tap())
-        
+
         // check the entry no longer exist
+        // workaround only for iPad to bug not showing the panel ok until coming back
+        if BrowserUtils.iPad() {
+            tester().waitForAnimationsToFinish()
+            tester().tapView(withAccessibilityIdentifier: "HomePanels.History")
+            tester().waitForAnimationsToFinish()
+            tester().tapView(withAccessibilityIdentifier: "HomePanels.ReadingList")
+            tester().waitForAnimationsToFinish(withTimeout: 3)
+        }
         waitForEmptyReadingList()
+
+        // Close Reading (and so Library) panel
+        BrowserUtils.closeLibraryMenu(tester())
     }
-    
+
     override func tearDown() {
-        BrowserUtils.resetToAboutHome(tester())
-        BrowserUtils.clearPrivateData(tester: tester())
+        BrowserUtils.resetToAboutHome()
+        BrowserUtils.clearPrivateData()
         super.tearDown()
     }
 }

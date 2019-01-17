@@ -6,7 +6,8 @@ import Foundation
 import Shared
 import WebKit
 import Deferred
-import WebImage
+import SDWebImage
+import CoreSpotlight
 
 private let log = Logger.browserLogger
 
@@ -40,12 +41,12 @@ class HistoryClearable: Clearable {
     }
 
     func clear() -> Success {
-        return profile.history.clearHistory().bind { success in
+        return profile.history.clearHistory().bindQueue(.main) { success in
             SDImageCache.shared().clearDisk()
             SDImageCache.shared().clearMemory()
             self.profile.recentlyClosedTabs.clearTabs()
-            SpotlightHelper.clearSearchIndex()
-            NotificationCenter.default.post(name: NotificationPrivateDataClearedHistory, object: nil)
+            CSSearchableIndex.default().deleteAllSearchableItems()
+            NotificationCenter.default.post(name: .PrivateDataClearedHistory, object: nil)
             log.debug("HistoryClearable succeeded: \(success).")
             return Deferred(value: success)
         }
@@ -78,7 +79,10 @@ class CacheClearable: Clearable {
 
     func clear() -> Success {
         let dataTypes = Set([WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache])
-        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date.distantPast, completionHandler: {})
+        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: .distantPast, completionHandler: {})
+
+        MemoryReaderModeCache.sharedInstance.clear()
+        DiskReaderModeCache.sharedInstance.clear()
 
         log.debug("CacheClearable succeeded.")
         return succeed()
@@ -87,7 +91,7 @@ class CacheClearable: Clearable {
 
 private func deleteLibraryFolderContents(_ folder: String) throws {
     let manager = FileManager.default
-    let library = manager.urls(for: FileManager.SearchPathDirectory.libraryDirectory, in: .userDomainMask)[0]
+    let library = manager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
     let dir = library.appendingPathComponent(folder)
     let contents = try manager.contentsOfDirectory(atPath: dir.path)
     for content in contents {
@@ -102,7 +106,7 @@ private func deleteLibraryFolderContents(_ folder: String) throws {
 
 private func deleteLibraryFolder(_ folder: String) throws {
     let manager = FileManager.default
-    let library = manager.urls(for: FileManager.SearchPathDirectory.libraryDirectory, in: .userDomainMask)[0]
+    let library = manager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
     let dir = library.appendingPathComponent(folder)
     try manager.removeItem(at: dir)
 }
@@ -120,7 +124,7 @@ class SiteDataClearable: Clearable {
 
     func clear() -> Success {
         let dataTypes = Set([WKWebsiteDataTypeOfflineWebApplicationCache])
-        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date.distantPast, completionHandler: {})
+        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: .distantPast, completionHandler: {})
 
         log.debug("SiteDataClearable succeeded.")
         return succeed()
@@ -140,9 +144,44 @@ class CookiesClearable: Clearable {
 
     func clear() -> Success {
         let dataTypes = Set([WKWebsiteDataTypeCookies, WKWebsiteDataTypeLocalStorage, WKWebsiteDataTypeSessionStorage, WKWebsiteDataTypeWebSQLDatabases, WKWebsiteDataTypeIndexedDBDatabases])
-        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: Date.distantPast, completionHandler: {})
+        WKWebsiteDataStore.default().removeData(ofTypes: dataTypes, modifiedSince: .distantPast, completionHandler: {})
 
         log.debug("CookiesClearable succeeded.")
+        return succeed()
+    }
+}
+
+class TrackingProtectionClearable: Clearable {
+    //@TODO: re-using string because we are too late in cycle to change strings
+    var label: String {
+        return Strings.SettingsTrackingProtectionSectionName
+    }
+
+    func clear() -> Success {
+        let result = Success()
+        ContentBlocker.shared.clearWhitelist() {
+            result.fill(Maybe(success: ()))
+        }
+        return result
+    }
+}
+
+// Clears our downloaded files in the `~/Documents/Downloads` folder.
+class DownloadedFilesClearable: Clearable {
+    var label: String {
+        return NSLocalizedString("Downloaded Files", tableName: "ClearPrivateData", comment: "Settings item for deleting downloaded files")
+    }
+
+    func clear() -> Success {
+        if let downloadsPath = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false).appendingPathComponent("Downloads"),
+            let files = try? FileManager.default.contentsOfDirectory(at: downloadsPath, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles, .skipsPackageDescendants, .skipsSubdirectoryDescendants]) {
+            for file in files {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+
+        NotificationCenter.default.post(name: .PrivateDataClearedDownloadedFiles, object: nil)
+
         return succeed()
     }
 }

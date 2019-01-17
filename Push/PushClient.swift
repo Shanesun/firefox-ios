@@ -78,7 +78,10 @@ public class PushClient {
     lazy fileprivate var alamofire: SessionManager = {
         let ua = UserAgent.fxaUserAgent
         let configuration = URLSessionConfiguration.ephemeral
-        return SessionManager.managerWithUserAgent(ua, configuration: configuration)
+        var defaultHeaders = SessionManager.default.session.configuration.httpAdditionalHeaders ?? [:]
+        defaultHeaders["User-Agent"] = ua
+        configuration.httpAdditionalHeaders = defaultHeaders
+        return SessionManager(configuration: configuration)
     }()
 
     public init(endpointURL: NSURL, experimentalMode: Bool = false) {
@@ -106,10 +109,10 @@ public extension PushClient {
             parameters = ["token": apnsToken]
         }
 
-        mutableURLRequest.httpBody = JSON(parameters).stringValue()?.utf8EncodedData
+        mutableURLRequest.httpBody = JSON(parameters).stringify()?.utf8EncodedData
 
         if experimentalMode {
-            log.info("curl -X POST \(registerURL.absoluteString) --data '\(JSON(parameters).stringValue()!)'")
+            log.info("curl -X POST \(registerURL.absoluteString) --data '\(JSON(parameters).stringify()!)'")
         }
 
         return send(request: mutableURLRequest) >>== { json in
@@ -131,7 +134,7 @@ public extension PushClient {
 
         mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let parameters = ["token": apnsToken]
-        mutableURLRequest.httpBody = JSON(parameters).stringValue()?.utf8EncodedData
+        mutableURLRequest.httpBody = JSON(parameters).stringify()?.utf8EncodedData
 
         return send(request: mutableURLRequest) >>== { json in
             return deferMaybe(creds)
@@ -170,7 +173,7 @@ extension PushClient {
                     }
 
                     let json = JSON(data: data)
-                    
+
                     if let remoteError = PushRemoteError.from(json: json) {
                         return deferred.fill(Maybe(failure: PushClientError.Remote(remoteError)))
                     }

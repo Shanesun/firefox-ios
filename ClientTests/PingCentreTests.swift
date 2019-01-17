@@ -8,7 +8,7 @@ import JSONSchema
 import Alamofire
 import Deferred
 import Shared
-@testable import Telemetry
+@testable import SyncTelemetry
 
 private let mockTopic = PingCentreTopic(name: "ios-mock", schema: Schema([
     "type": "object",
@@ -40,7 +40,7 @@ class MockingURLProtocol: URLProtocol {
                                          headerFields: [:])
 
         self.client?.urlProtocol(self, didReceive: response!, cacheStoragePolicy: .notAllowed)
-        self.client?.urlProtocol(self, didLoad: "".data(using: String.Encoding.utf8)!)
+        self.client?.urlProtocol(self, didLoad: "".data(using: .utf8)!)
         self.client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -55,7 +55,7 @@ class PingCentreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        
+
         let configuration = URLSessionConfiguration.default
         configuration.protocolClasses!.insert(MockingURLProtocol.self, at: 0)
 
@@ -97,7 +97,7 @@ class PingCentreTests: XCTestCase {
         XCTAssertTrue(receivedNetworkRequests.count == 1)
 
         client.sendBatch([], validate: true).succeeded()
-        
+
         // Double check that we didn't send the empty payloads request
         XCTAssertTrue(receivedNetworkRequests.count == 1)
     }

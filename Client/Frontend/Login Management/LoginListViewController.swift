@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import Foundation
 import UIKit
 import SnapKit
 import Storage
@@ -14,10 +13,8 @@ private struct LoginListUX {
     static let RowHeight: CGFloat = 58
     static let SearchHeight: CGFloat = 58
     static let selectionButtonFont = UIFont.systemFont(ofSize: 16)
-    static let selectionButtonTextColor = UIColor.white
-    static let selectionButtonBackground = UIConstants.HighlightBlue
     static let NoResultsFont: UIFont = UIFont.systemFont(ofSize: 16)
-    static let NoResultsTextColor: UIColor = UIColor.lightGray
+    static let NoResultsTextColor: UIColor = UIColor.Photon.Grey40
 }
 
 private extension UITableView {
@@ -43,14 +40,14 @@ class LoginListViewController: SensitiveViewController {
     }()
 
     fileprivate let profile: Profile
-
     fileprivate let searchView = SearchInputView()
-
     fileprivate var activeLoginQuery: Deferred<Maybe<[Login]>>?
-
-    fileprivate let loadingStateView = LoadingLoginsView()
-
+    fileprivate let loadingView = SettingsLoadingView()
     fileprivate var deleteAlert: UIAlertController?
+    fileprivate var selectionButtonHeightConstraint: Constraint?
+    fileprivate var selectedIndexPaths = [IndexPath]()
+    fileprivate let tableView = UITableView()
+    weak var settingsDelegate: SettingsDelegate?
 
     // Titles for selection/deselect/delete buttons
     fileprivate let deselectAllTitle = NSLocalizedString("Deselect All", tableName: "LoginManager", comment: "Label for the button used to deselect all logins.")
@@ -60,19 +57,10 @@ class LoginListViewController: SensitiveViewController {
     fileprivate lazy var selectionButton: UIButton = {
         let button = UIButton()
         button.titleLabel?.font = LoginListUX.selectionButtonFont
-        button.setTitle(self.selectAllTitle, for: UIControlState())
-        button.setTitleColor(LoginListUX.selectionButtonTextColor, for: UIControlState())
-        button.backgroundColor = LoginListUX.selectionButtonBackground
-        button.addTarget(self, action: #selector(LoginListViewController.tappedSelectionButton), for: .touchUpInside)
+        button.setTitle(self.selectAllTitle, for: [])
+        button.addTarget(self, action: #selector(tappedSelectionButton), for: .touchUpInside)
         return button
     }()
-
-    fileprivate var selectionButtonHeightConstraint: Constraint?
-    fileprivate var selectedIndexPaths = [IndexPath]()
-
-    fileprivate let tableView = UITableView()
-
-    weak var settingsDelegate: SettingsDelegate?
 
     init(profile: Profile) {
         self.profile = profile
@@ -87,12 +75,11 @@ class LoginListViewController: SensitiveViewController {
         super.viewDidLoad()
 
         let notificationCenter = NotificationCenter.default
-        notificationCenter.addObserver(self, selector: #selector(LoginListViewController.remoteLoginsDidChange), name: NotificationDataRemoteLoginChangesWereApplied, object: nil)
-        notificationCenter.addObserver(self, selector: #selector(LoginListViewController.dismissAlertController), name: NSNotification.Name.UIApplicationDidEnterBackground, object: nil)
+        notificationCenter.addObserver(self, selector: #selector(remoteLoginsDidChange), name: .DataRemoteLoginChangesWereApplied, object: nil)
+        notificationCenter.addObserver(self, selector: #selector(dismissAlertController), name: .UIApplicationDidEnterBackground, object: nil)
 
         automaticallyAdjustsScrollViewInsets = false
-        self.view.backgroundColor = UIColor.white
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .edit, target: self, action: #selector(LoginListViewController.beginEditing))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .edit, target: self, action: #selector(beginEditing))
 
         self.title = NSLocalizedString("Logins", tableName: "LoginManager", comment: "Title for Logins List View screen.")
 
@@ -101,33 +88,35 @@ class LoginListViewController: SensitiveViewController {
 
         view.addSubview(searchView)
         view.addSubview(tableView)
-        view.addSubview(loadingStateView)
+        view.addSubview(loadingView)
         view.addSubview(selectionButton)
 
-        loadingStateView.isHidden = true
+        loadingView.isHidden = true
 
         searchView.snp.makeConstraints { make in
             make.top.equalTo(self.topLayoutGuide.snp.bottom)
-            make.left.right.equalTo(self.view)
+            make.leading.trailing.equalTo(self.view)
             make.height.equalTo(LoginListUX.SearchHeight)
         }
 
         tableView.snp.makeConstraints { make in
             make.top.equalTo(searchView.snp.bottom)
-            make.left.right.equalTo(self.view)
+            make.leading.trailing.equalTo(self.view)
             make.bottom.equalTo(self.selectionButton.snp.top)
         }
 
         selectionButton.snp.makeConstraints { make in
-            make.left.right.bottom.equalTo(self.view)
+            make.leading.trailing.bottom.equalTo(self.view)
             make.top.equalTo(self.tableView.snp.bottom)
             make.bottom.equalTo(self.view)
             selectionButtonHeightConstraint = make.height.equalTo(0).constraint
         }
 
-        loadingStateView.snp.makeConstraints { make in
+        loadingView.snp.makeConstraints { make in
             make.edges.equalTo(tableView)
         }
+
+        applyTheme()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -145,24 +134,34 @@ class LoginListViewController: SensitiveViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        self.loginDataSource.emptyStateView.searchBarHeight = searchView.frame.height
-        self.loadingStateView.searchBarHeight = searchView.frame.height
+        loginDataSource.emptyStateView.searchBarHeight = searchView.frame.height
+        loadingView.searchBarHeight = searchView.frame.height
     }
 
     deinit {
-        let notificationCenter = NotificationCenter.default
-        notificationCenter.removeObserver(self, name: NotificationProfileDidFinishSyncing, object: nil)
-        notificationCenter.removeObserver(self, name: NotificationDataLoginDidChange, object: nil)
-        notificationCenter.removeObserver(self, name: NotificationDataRemoteLoginChangesWereApplied, object: nil)
-        notificationCenter.removeObserver(self, name: NSNotification.Name.UIApplicationDidEnterBackground, object: nil)
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    func applyTheme() {
+        view.backgroundColor = UIColor.theme.tableView.rowBackground
+
+        tableView.separatorColor = UIColor.theme.tableView.separator
+        tableView.backgroundColor = UIColor.theme.tableView.headerBackground
+        tableView.reloadData()
+
+        (tableView.tableHeaderView as? Themeable)?.applyTheme()
+
+        selectionButton.setTitleColor(UIColor.theme.tableView.rowBackground, for: [])
+        selectionButton.backgroundColor = UIColor.theme.general.highlightBlue
+
     }
 
     fileprivate func toggleDeleteBarButton() {
         // Show delete bar button item if we have selected any items
         if loginSelectionController.selectedCount > 0 {
             if navigationItem.rightBarButtonItem == nil {
-                navigationItem.rightBarButtonItem = UIBarButtonItem(title: deleteLoginTitle, style: .plain, target: self, action: #selector(LoginListViewController.tappedDelete))
-                navigationItem.rightBarButtonItem?.tintColor = UIColor.red
+                navigationItem.rightBarButtonItem = UIBarButtonItem(title: deleteLoginTitle, style: .plain, target: self, action: #selector(tappedDelete))
+                navigationItem.rightBarButtonItem?.tintColor = UIColor.Photon.Red50
             }
         } else {
             navigationItem.rightBarButtonItem = nil
@@ -171,9 +170,9 @@ class LoginListViewController: SensitiveViewController {
 
     fileprivate func toggleSelectionTitle() {
         if loginSelectionController.selectedCount == loginDataSource.count {
-            selectionButton.setTitle(deselectAllTitle, for: UIControlState())
+            selectionButton.setTitle(deselectAllTitle, for: [])
         } else {
-            selectionButton.setTitle(selectAllTitle, for: UIControlState())
+            selectionButton.setTitle(selectAllTitle, for: [])
         }
     }
 
@@ -191,7 +190,9 @@ class LoginListViewController: SensitiveViewController {
 // MARK: - Selectors
 private extension LoginListViewController {
     @objc func remoteLoginsDidChange() {
-        loadLogins()
+        DispatchQueue.main.async {
+            self.loadLogins()
+        }
     }
 
     @objc func dismissAlertController() {
@@ -199,17 +200,17 @@ private extension LoginListViewController {
     }
 
     func loadLogins(_ query: String? = nil) {
-        loadingStateView.isHidden = false
+        loadingView.isHidden = false
 
         // Fill in an in-flight query and re-query
         activeLoginQuery?.fillIfUnfilled(Maybe(success: []))
         activeLoginQuery = queryLogins(query ?? "")
-        activeLoginQuery! >>== self.loginDataSource.setLogins
+        activeLoginQuery! >>== loginDataSource.setLogins
     }
 
     @objc func beginEditing() {
         navigationItem.rightBarButtonItem = nil
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(LoginListViewController.cancelSelection))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancelSelection))
         selectionButtonHeightConstraint?.update(offset: UIConstants.ToolbarHeight)
         self.view.layoutIfNeeded()
         tableView.setEditing(true, animated: true)
@@ -224,18 +225,18 @@ private extension LoginListViewController {
 
         tableView.setEditing(false, animated: true)
         navigationItem.leftBarButtonItem = nil
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .edit, target: self, action: #selector(LoginListViewController.beginEditing))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .edit, target: self, action: #selector(beginEditing))
     }
 
     @objc func tappedDelete() {
-        profile.logins.hasSyncedLogins().uponQueue(DispatchQueue.main) { yes in
+        profile.logins.hasSyncedLogins().uponQueue(.main) { yes in
             self.deleteAlert = UIAlertController.deleteLoginAlertWithDeleteCallback({ [unowned self] _ in
                 // Delete here
                 let guidsToDelete = self.loginSelectionController.selectedIndexPaths.map { indexPath in
                     self.loginDataSource.loginAtIndexPath(indexPath)!.guid
                 }
 
-                self.profile.logins.removeLoginsWithGUIDs(guidsToDelete).uponQueue(DispatchQueue.main) { _ in
+                self.profile.logins.removeLoginsWithGUIDs(guidsToDelete).uponQueue(.main) { _ in
                     self.cancelSelection()
                     self.loadLogins()
                 }
@@ -274,13 +275,13 @@ private extension LoginListViewController {
 // MARK: - LoginDataSourceObserver
 extension LoginListViewController: LoginDataSourceObserver {
     func loginSectionsDidUpdate() {
-        loadingStateView.isHidden = true
+        loadingView.isHidden = true
         tableView.reloadData()
         activeLoginQuery = nil
         navigationItem.rightBarButtonItem?.isEnabled = loginDataSource.count > 0
         restoreSelectedRows()
     }
-    
+
     func restoreSelectedRows() {
         for path in self.loginSelectionController.selectedIndexPaths {
             tableView.selectRow(at: path, animated: false, scrollPosition: .none)
@@ -361,7 +362,7 @@ extension LoginListViewController: SearchInputViewDelegate {
 
     @objc func searchInputViewFinishedEditing(_ searchView: SearchInputView) {
         // Show the edit after we're done with the search
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .edit, target: self, action: #selector(LoginListViewController.beginEditing))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .edit, target: self, action: #selector(beginEditing))
         loadLogins()
     }
 }
@@ -410,7 +411,7 @@ fileprivate class ListSelectionController: NSObject {
     }
 }
 
-protocol LoginDataSourceObserver: class {
+protocol LoginDataSourceObserver: AnyObject {
     func loginSectionsDidUpdate()
 }
 
@@ -461,7 +462,6 @@ class LoginDataSource: NSObject, UITableViewDataSource {
     @objc func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: LoginCellIdentifier, for: indexPath) as! LoginTableViewCell
         let login = loginAtIndexPath(indexPath)!
-        cell.style = .noIconAndBothLabels
         cell.updateCellWithLogin(login)
         return cell
     }
@@ -481,7 +481,7 @@ class LoginDataSource: NSObject, UITableViewDataSource {
     func setLogins(_ logins: [Login]) {
         // NB: Make sure we call the callback on the main thread so it can be synced up with a reloadData to
         //     prevent race conditions between data/UI indexing.
-        return computeSectionsFromLogins(logins).uponQueue(DispatchQueue.main) { result in
+        return computeSectionsFromLogins(logins).uponQueue(.main) { result in
             guard let (titles, sections) = result.successValue else {
                 self.count = 0
                 self.titles = []
@@ -509,7 +509,7 @@ class LoginDataSource: NSObject, UITableViewDataSource {
         func titleForLogin(_ login: Login) -> Character {
             // Fallback to hostname if we can't extract a base domain.
             let titleString = domainLookup[login.guid]?.baseDomain?.uppercased() ?? login.hostname
-            return titleString.characters.first ?? Character("")
+            return titleString.first ?? Character("")
         }
 
         // Rules for sorting login URLS:
@@ -601,37 +601,4 @@ fileprivate class NoLoginsView: UIView {
     }
 }
 
-/// View to display to the user while we are loading the logins
-fileprivate class LoadingLoginsView: UIView {
 
-    var searchBarHeight: CGFloat = 0 {
-        didSet {
-            setNeedsUpdateConstraints()
-        }
-    }
-
-    lazy var indicator: UIActivityIndicatorView = {
-        let indicator = UIActivityIndicatorView(activityIndicatorStyle: .gray)
-        indicator.hidesWhenStopped = false
-        return indicator
-    }()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        addSubview(indicator)
-        backgroundColor = UIColor.white
-        indicator.startAnimating()
-    }
-
-    fileprivate override func updateConstraints() {
-        super.updateConstraints()
-        indicator.snp.remakeConstraints { make in
-            make.centerX.equalTo(self)
-            make.centerY.equalTo(self).offset(-(searchBarHeight / 2))
-        }
-    }
-
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}

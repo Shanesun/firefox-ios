@@ -6,7 +6,7 @@ import Foundation
 import Shared
 @testable import Storage
 import XCGLogger
-
+import Deferred
 import XCTest
 
 private let log = XCGLogger.default
@@ -22,7 +22,7 @@ class TestSQLiteLogins: XCTestCase {
         super.setUp()
 
         let files = MockFiles()
-        self.db = BrowserDB(filename: "testsqlitelogins.db", files: files)
+        self.db = BrowserDB(filename: "testsqlitelogins.db", schema: LoginsSchema(), files: files)
         self.logins = SQLiteLogins(db: self.db)
 
         let expectation = self.expectation(description: "Remove all logins.")
@@ -86,7 +86,7 @@ class TestSQLiteLogins: XCTestCase {
         let result = logins.getAllLogins().value.successValue!
         XCTAssertEqual(result.count, 2)
     }
-    
+
     func testRemoveManyLogins() {
         log.debug("Remove a large number of logins at once")
         var guids: [GUID] = []
@@ -327,7 +327,7 @@ class TestSQLiteLogins: XCTestCase {
     func removeAllLogins() -> Success {
         log.debug("Remove All")
         // Because we don't want to just mark them as deleted.
-        return self.db.run("DELETE FROM \(TableLoginsMirror)") >>> { self.db.run("DELETE FROM \(TableLoginsLocal)") }
+        return self.db.run("DELETE FROM loginsM") >>> { self.db.run("DELETE FROM loginsL") }
     }
 }
 
@@ -338,7 +338,7 @@ class TestSQLiteLoginsPerf: XCTestCase {
     override func setUp() {
         super.setUp()
         let files = MockFiles()
-        self.db = BrowserDB(filename: "testsqlitelogins.db", files: files)
+        self.db = BrowserDB(filename: "testsqlitelogins.db", schema: LoginsSchema(), files: files)
         self.logins = SQLiteLogins(db: self.db)
     }
 
@@ -346,7 +346,7 @@ class TestSQLiteLoginsPerf: XCTestCase {
         populateTestLogins()
 
         // Measure time to find one entry amongst the 1000 of them
-        self.measureMetrics([XCTPerformanceMetric_WallClockTime], automaticallyStartMeasuring: true) {
+        self.measureMetrics([XCTPerformanceMetric.wallClockTime], automaticallyStartMeasuring: true) {
             for _ in 0...5 {
                 self.logins.searchLoginsWithQuery("username500").succeeded()
             }
@@ -360,7 +360,7 @@ class TestSQLiteLoginsPerf: XCTestCase {
         populateTestLogins()
 
         // Measure time to find all matching results
-        self.measureMetrics([XCTPerformanceMetric_WallClockTime], automaticallyStartMeasuring: true) {
+        self.measureMetrics([XCTPerformanceMetric.wallClockTime], automaticallyStartMeasuring: true) {
             for _ in 0...5 {
                 self.logins.searchLoginsWithQuery("username").succeeded()
             }
@@ -374,10 +374,8 @@ class TestSQLiteLoginsPerf: XCTestCase {
         populateTestLogins()
 
         // Measure time to find all matching results
-        self.measureMetrics([XCTPerformanceMetric_WallClockTime], automaticallyStartMeasuring: true) {
-            for _ in 0...5 {
-                self.logins.getAllLogins().succeeded()
-            }
+        self.measureMetrics([XCTPerformanceMetric.wallClockTime], automaticallyStartMeasuring: true) {
+            self.logins.getAllLogins().succeeded()
             self.stopMeasuring()
         }
 
@@ -385,10 +383,12 @@ class TestSQLiteLoginsPerf: XCTestCase {
     }
 
     func populateTestLogins() {
+        var results = [Success]()
         for i in 0..<1000 {
             let login = Login.createWithHostname("website\(i).com", username: "username\(i)", password: "password\(i)", formSubmitURL: "test")
-            addLogin(login).succeeded()
+            results.append(addLogin(login))
         }
+        _ = all(results).value
     }
 
     func addLogin(_ login: LoginData) -> Success {
@@ -398,7 +398,7 @@ class TestSQLiteLoginsPerf: XCTestCase {
     func removeAllLogins() -> Success {
         log.debug("Remove All")
         // Because we don't want to just mark them as deleted.
-        return self.db.run("DELETE FROM \(TableLoginsMirror)") >>> { self.db.run("DELETE FROM \(TableLoginsLocal)") }
+        return self.db.run("DELETE FROM loginsM") >>> { self.db.run("DELETE FROM loginsL") }
     }
 }
 
@@ -410,7 +410,7 @@ class TestSyncableLogins: XCTestCase {
         super.setUp()
 
         let files = MockFiles()
-        self.db = BrowserDB(filename: "testsyncablelogins.db", files: files)
+        self.db = BrowserDB(filename: "testsyncablelogins.db", schema: LoginsSchema(), files: files)
         self.logins = SQLiteLogins(db: self.db)
 
         let expectation = self.expectation(description: "Remove all logins.")
@@ -421,7 +421,7 @@ class TestSyncableLogins: XCTestCase {
     func removeAllLogins() -> Success {
         log.debug("Remove All")
         // Because we don't want to just mark them as deleted.
-        return self.db.run("DELETE FROM \(TableLoginsMirror)") >>> { self.db.run("DELETE FROM \(TableLoginsLocal)") }
+        return self.db.run("DELETE FROM loginsM") >>> { self.db.run("DELETE FROM loginsL") }
     }
 
     func testDiffers() {

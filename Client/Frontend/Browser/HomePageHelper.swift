@@ -11,7 +11,6 @@ private let log = Logger.browserLogger
 struct HomePageConstants {
     static let HomePageURLPrefKey = "HomePageURLPref"
     static let DefaultHomePageURLPrefKey = PrefsKeys.KeyDefaultHomePageURL
-    static let HomePageButtonIsInMenuPrefKey = PrefsKeys.KeyHomePageButtonIsInMenu
 }
 
 class HomePageHelper {
@@ -20,10 +19,10 @@ class HomePageHelper {
 
     var currentURL: URL? {
         get {
-            return HomePageAccessors.getHomePage(prefs)
+            return NewTabHomePageAccessors.getHomePage(prefs)
         }
         set {
-            if let url = newValue, url.isWebPage(includeDataURIs: false) && !url.isLocal {
+            if let url = newValue, url.isWebPage(includeDataURIs: false) && !InternalURL.isValid(url: url) {
                 prefs.setString(url.absoluteString, forKey: HomePageConstants.HomePageURLPrefKey)
             } else {
                 prefs.removeObjectForKey(HomePageConstants.HomePageURLPrefKey)
@@ -32,7 +31,7 @@ class HomePageHelper {
     }
 
     var defaultURLString: String? {
-        return HomePageAccessors.getDefaultHomePageString(prefs)
+        return NewTabHomePageAccessors.getDefaultHomePageString(prefs)
     }
 
     var isHomePageAvailable: Bool { return currentURL != nil }
@@ -50,23 +49,4 @@ class HomePageHelper {
         tab.loadRequest(URLRequest(url: url))
     }
 
-    func openHomePage(inTab tab: Tab, withNavigationController navigationController: UINavigationController?) {
-        if isHomePageAvailable {
-            openHomePage(tab)
-        } else {
-            setHomePage(toTab: tab, withNavigationController: navigationController)
-        }
-    }
-
-    func setHomePage(toTab tab: Tab, withNavigationController navigationController: UINavigationController?) {
-        let alertController = UIAlertController(
-            title: Strings.SetHomePageDialogTitle,
-            message: Strings.SetHomePageDialogMessage,
-            preferredStyle: UIAlertControllerStyle.alert)
-        alertController.addAction(UIAlertAction(title: Strings.SetHomePageDialogNo, style: .cancel, handler: nil))
-        alertController.addAction(UIAlertAction(title: Strings.SetHomePageDialogYes, style: .default) { _ in
-            self.currentURL = tab.url as URL?
-            })
-        navigationController?.present(alertController, animated: true, completion: nil)
-    }
 }

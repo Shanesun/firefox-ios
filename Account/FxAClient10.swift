@@ -13,8 +13,6 @@ public let FxAClientErrorDomain = "org.mozilla.fxa.error"
 public let FxAClientUnknownError = NSError(domain: FxAClientErrorDomain, code: 999,
     userInfo: [NSLocalizedDescriptionKey: "Invalid server response"])
 
-let KeyLength: Int = 32
-
 public struct FxALoginResponse {
     public let remoteEmail: String
     public let uid: String
@@ -50,6 +48,34 @@ public struct FxAStatusResponse {
 
 public struct FxADevicesResponse {
     let devices: [FxADevice]
+}
+
+public struct FxANotifyResponse {
+    let success: Bool
+}
+
+public struct FxASendMessageResponse {
+    let success: Bool
+}
+
+public struct FxACommandsResponse {
+    let index: Int64
+    let commands: [FxACommand]
+}
+
+public struct FxAOAuthResponse {
+    let accessToken: String
+}
+
+public struct FxAProfileResponse {
+    let email: String
+    let uid: String
+    let avatarURL: String?
+    let displayName: String?
+}
+
+public struct FxADeviceDestroyResponse {
+    let success: Bool
 }
 
 // fxa-auth-server produces error details like:
@@ -104,10 +130,14 @@ public struct RemoteError {
 }
 
 open class FxAClient10 {
-    let URL: URL
+    let authURL: URL
+    let oauthURL: URL
+    let profileURL: URL
 
-    public init(endpoint: URL? = nil) {
-        self.URL = endpoint ?? ProductionFirefoxAccountConfiguration().authEndpointURL as URL
+    public init(authEndpoint: URL? = nil, oauthEndpoint: URL? = nil, profileEndpoint: URL? = nil) {
+        self.authURL = authEndpoint ?? ProductionFirefoxAccountConfiguration().authEndpointURL as URL
+        self.oauthURL = oauthEndpoint ?? ProductionFirefoxAccountConfiguration().oauthEndpointURL as URL
+        self.profileURL = profileEndpoint ?? ProductionFirefoxAccountConfiguration().profileEndpointURL as URL
     }
 
     open class func KW(_ kw: String) -> Data {
@@ -119,18 +149,22 @@ open class FxAClient10 {
      * lowercase-hex-encoded first 16 bytes of the SHA-256 hash of the
      * bytes of kB.
      */
-    open class func computeClientState(_ kB: Data) -> String? {
-        if kB.count != 32 {
-            return nil
-        }
-        return kB.sha256.subdata(in:  0..<16).hexEncodedString
+    open class func computeClientState(_ kB: Data) -> String {
+        return kB.sha256.subdata(in: 0..<16).hexEncodedString
+    }
+
+    open class func deriveKSync(_ kB: Data) -> Data {
+        let salt = Data()
+        let contextInfo = FxAClient10.KW("oldsync")
+        let len: UInt = 64               // KeyLength + KeyLength, without type nonsense.
+        return (kB as NSData).deriveHKDFSHA256Key(withSalt: salt, contextInfo: contextInfo, length: len)!
     }
 
     open class func quickStretchPW(_ email: Data, password: Data) -> Data {
         var salt = KW("quickStretch")
         salt.append(":".utf8EncodedData)
         salt.append(email)
-        return (password as NSData).derivePBKDF2HMACSHA256Key(withSalt: salt as Data!, iterations: 1000, length: 32)
+        return (password as NSData).derivePBKDF2HMACSHA256Key(withSalt: salt as Data, iterations: 1000, length: 32)
     }
 
     open class func computeUnwrapKey(_ stretchedPW: Data) -> Data {
@@ -229,17 +263,68 @@ open class FxAClient10 {
                 return nil
         }
 
-        let devices = jsonDevices.flatMap { (jsonDevice) -> FxADevice? in
+        let devices = jsonDevices.compactMap { (jsonDevice) -> FxADevice? in
             return FxADevice.fromJSON(jsonDevice)
         }
 
         return FxADevicesResponse(devices: devices)
     }
 
+    fileprivate class func notifyResponse(fromJSON json: JSON) -> FxANotifyResponse {
+        return FxANotifyResponse(success: json.error == nil)
+    }
+
+    fileprivate class func sendMessageResponse(fromJSON json: JSON) -> FxASendMessageResponse {
+        return FxASendMessageResponse(success: json.error == nil)
+    }
+
+    fileprivate class func commandsResponse(fromJSON json: JSON) -> FxACommandsResponse? {
+        guard json.error == nil,
+            let jsonIndex = json["index"].int64,
+            let jsonCommands = json["messages"].array else { // Commands are under "messages" for some reason
+                return nil
+        }
+
+        let commands = jsonCommands.compactMap { (jsonCommand) -> FxACommand? in
+            return FxACommand.fromJSON(jsonCommand)
+        }
+
+        return FxACommandsResponse(index: jsonIndex, commands: commands)
+    }
+
+    fileprivate class func deviceDestroyResponse(fromJSON json: JSON) -> FxADeviceDestroyResponse {
+        return FxADeviceDestroyResponse(success: json.error == nil)
+    }
+
+    fileprivate class func oauthResponse(fromJSON json: JSON) -> FxAOAuthResponse? {
+        guard json.error == nil,
+            let accessToken = json["access_token"].string else {
+                return nil
+        }
+
+        return FxAOAuthResponse(accessToken: accessToken)
+    }
+
+    fileprivate class func profileResponse(fromJSON json: JSON) -> FxAProfileResponse? {
+        guard json.error == nil,
+            let uid = json["uid"].string,
+            let email = json["email"].string else {
+                return nil
+        }
+
+        let avatarURL = json["avatar"].string
+        let displayName = json["displayName"].string
+
+        return FxAProfileResponse(email: email, uid: uid, avatarURL: avatarURL, displayName: displayName)
+    }
+
     lazy fileprivate var alamofire: SessionManager = {
         let ua = UserAgent.fxaUserAgent
         let configuration = URLSessionConfiguration.ephemeral
-        return SessionManager.managerWithUserAgent(ua, configuration: configuration)
+        var defaultHeaders = SessionManager.default.session.configuration.httpAdditionalHeaders ?? [:]
+        defaultHeaders["User-Agent"] = ua
+        configuration.httpAdditionalHeaders = defaultHeaders
+        return SessionManager(configuration: configuration)
     }()
 
     open func login(_ emailUTF8: Data, quickStretchedPW: Data, getKeys: Bool) -> Deferred<Maybe<FxALoginResponse>> {
@@ -250,7 +335,7 @@ open class FxAClient10 {
             "authPW": authPW.base16EncodedString(options: NSDataBase16EncodingOptions.lowerCase) as NSString,
         ]
 
-        var URL: URL = self.URL.appendingPathComponent("/account/login")
+        var URL: URL = self.authURL.appendingPathComponent("/account/login")
         if getKeys {
             var components = URLComponents(url: URL, resolvingAgainstBaseURL: false)!
             components.query = "keys=true"
@@ -260,13 +345,13 @@ open class FxAClient10 {
         mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
 
         mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        mutableURLRequest.httpBody = JSON(parameters).stringValue()?.utf8EncodedData
+        mutableURLRequest.httpBody = JSON(parameters).stringify()?.utf8EncodedData
 
         return makeRequest(mutableURLRequest, responseHandler: FxAClient10.loginResponse)
     }
 
     open func status(forUID uid: String) -> Deferred<Maybe<FxAStatusResponse>> {
-        let statusURL = self.URL.appendingPathComponent("/account/status").withQueryParam("uid", value: uid)
+        let statusURL = self.authURL.appendingPathComponent("/account/status").withQueryParam("uid", value: uid)
         var mutableURLRequest = URLRequest(url: statusURL)
         mutableURLRequest.httpMethod = HTTPMethod.get.rawValue
 
@@ -276,7 +361,7 @@ open class FxAClient10 {
     }
 
     open func devices(withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxADevicesResponse>> {
-        let URL = self.URL.appendingPathComponent("/account/devices")
+        let URL = self.authURL.appendingPathComponent("/account/devices")
         var mutableURLRequest = URLRequest(url: URL)
         mutableURLRequest.httpMethod = HTTPMethod.get.rawValue
 
@@ -290,13 +375,113 @@ open class FxAClient10 {
         return makeRequest(mutableURLRequest, responseHandler: FxAClient10.devicesResponse)
     }
 
+    open func notify(deviceIDs: [GUID], collectionsChanged collections: [String], reason: String, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxANotifyResponse>> {
+        let httpBody = JSON([
+            "to": deviceIDs,
+            "payload": [
+                "version": 1,
+                "command": "sync:collection_changed",
+                "data": [
+                    "collections": collections,
+                    "reason": reason
+                ]
+            ]
+        ])
+        return self.notify(httpBody: httpBody, withSessionToken: sessionToken)
+    }
+
+    open func notifyAll(ownDeviceId: GUID, collectionsChanged collections: [String], reason: String, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxANotifyResponse>> {
+        let httpBody = JSON([
+            "to": "all",
+            "excluded": [ownDeviceId],
+            "payload": [
+                "version": 1,
+                "command": "sync:collection_changed",
+                "data": [
+                    "collections": collections,
+                    "reason": reason
+                ]
+            ]
+        ])
+        return self.notify(httpBody: httpBody, withSessionToken: sessionToken)
+    }
+
+    fileprivate func notify(httpBody: JSON, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxANotifyResponse>> {
+        let URL = self.authURL.appendingPathComponent("/account/devices/notify")
+        var mutableURLRequest = URLRequest(url: URL)
+        mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
+        mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        mutableURLRequest.httpBody = httpBody.stringify()?.utf8EncodedData
+
+        let salt: Data = Data()
+        let contextInfo: Data = FxAClient10.KW("sessionToken")
+        let key = sessionToken.deriveHKDFSHA256Key(withSalt: salt, contextInfo: contextInfo, length: UInt(2 * KeyLength))!
+        mutableURLRequest.addAuthorizationHeader(forHKDFSHA256Key: key)
+
+        return makeRequest(mutableURLRequest, responseHandler: FxAClient10.notifyResponse)
+    }
+
+    open func destroyDevice(ownDeviceId: GUID, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxADeviceDestroyResponse>> {
+        let URL = self.authURL.appendingPathComponent("/account/device/destroy")
+        var mutableURLRequest = URLRequest(url: URL)
+        let httpBody: JSON = JSON(["id": ownDeviceId])
+        mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
+        mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        mutableURLRequest.httpBody = httpBody.stringify()?.utf8EncodedData
+
+        let salt: Data = Data()
+        let contextInfo: Data = FxAClient10.KW("sessionToken")
+        let key = sessionToken.deriveHKDFSHA256Key(withSalt: salt, contextInfo: contextInfo, length: UInt(2 * KeyLength))!
+        mutableURLRequest.addAuthorizationHeader(forHKDFSHA256Key: key)
+
+        return makeRequest(mutableURLRequest, responseHandler: FxAClient10.deviceDestroyResponse)
+    }
+
+    open func commands(atIndex index: Int? = nil, limit: UInt? = nil, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxACommandsResponse>> {
+        var queryParams: [URLQueryItem] = []
+        if let index = index {
+            queryParams.append(URLQueryItem(name: "index", value: "\(index)"))
+        }
+        if let limit = limit {
+            queryParams.append(URLQueryItem(name: "limit", value: "\(limit)"))
+        }
+
+        let URL = self.authURL.appendingPathComponent("/account/device/commands").withQueryParams(queryParams)
+        var mutableURLRequest = URLRequest(url: URL)
+        mutableURLRequest.httpMethod = HTTPMethod.get.rawValue
+        mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let salt: Data = Data()
+        let contextInfo: Data = FxAClient10.KW("sessionToken")
+        let key = sessionToken.deriveHKDFSHA256Key(withSalt: salt, contextInfo: contextInfo, length: UInt(2 * KeyLength))!
+        mutableURLRequest.addAuthorizationHeader(forHKDFSHA256Key: key)
+
+        return makeRequest(mutableURLRequest, responseHandler: FxAClient10.commandsResponse)
+    }
+
+    open func invokeCommand(name: String, targetDeviceID: GUID, payload: String, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxASendMessageResponse>> {
+        let URL = self.authURL.appendingPathComponent("/account/devices/invoke_command")
+        var mutableURLRequest = URLRequest(url: URL)
+        let httpBody: JSON = JSON(["command": name, "target": targetDeviceID, "payload": ["encrypted": payload]])
+        mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
+        mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        mutableURLRequest.httpBody = httpBody.stringify()?.utf8EncodedData
+
+        let salt: Data = Data()
+        let contextInfo: Data = FxAClient10.KW("sessionToken")
+        let key = sessionToken.deriveHKDFSHA256Key(withSalt: salt, contextInfo: contextInfo, length: UInt(2 * KeyLength))!
+        mutableURLRequest.addAuthorizationHeader(forHKDFSHA256Key: key)
+
+        return makeRequest(mutableURLRequest, responseHandler: FxAClient10.sendMessageResponse)
+    }
+
     open func registerOrUpdate(device: FxADevice, withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxADevice>> {
-        let URL = self.URL.appendingPathComponent("/account/device")
+        let URL = self.authURL.appendingPathComponent("/account/device")
         var mutableURLRequest = URLRequest(url: URL)
         mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
 
         mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        mutableURLRequest.httpBody = device.toJSON().stringValue()?.utf8EncodedData
+        mutableURLRequest.httpBody = device.toJSON().rawString(options: [])?.utf8EncodedData
 
         let salt: Data = Data()
         let contextInfo: Data = FxAClient10.KW("sessionToken")
@@ -304,6 +489,65 @@ open class FxAClient10 {
         mutableURLRequest.addAuthorizationHeader(forHKDFSHA256Key: key)
 
         return makeRequest(mutableURLRequest, responseHandler: FxADevice.fromJSON)
+    }
+
+    open func oauthAuthorize(withSessionToken sessionToken: NSData, keyPair: RSAKeyPair, certificate: String) -> Deferred<Maybe<FxAOAuthResponse>> {
+        let audience = self.getAudience(forURL: self.oauthURL)
+
+        let assertion = JSONWebTokenUtils.createAssertionWithPrivateKeyToSign(with: keyPair.privateKey,
+                                                                              certificate: certificate,
+                                                                              audience: audience)
+
+        let oauthAuthorizationURL = self.oauthURL.appendingPathComponent("/authorization")
+        var mutableURLRequest = URLRequest(url: oauthAuthorizationURL)
+        mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
+        mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let parameters = [
+            "assertion": assertion,
+            "client_id": AppConstants.FxAiOSClientId,
+            "response_type": "token",
+            "scope": "profile",
+            "ttl": "300"
+        ]
+
+        let salt: Data = Data()
+        let contextInfo: Data = FxAClient10.KW("sessionToken")
+        let key = sessionToken.deriveHKDFSHA256Key(withSalt: salt, contextInfo: contextInfo, length: UInt(2 * KeyLength))!
+
+        guard let httpBody = JSON(parameters as NSDictionary).stringify()?.utf8EncodedData else {
+            return deferMaybe(FxAClientError.local(FxAClientUnknownError))
+        }
+
+        mutableURLRequest.httpBody = httpBody
+        mutableURLRequest.addAuthorizationHeader(forHKDFSHA256Key: key)
+
+        return makeRequest(mutableURLRequest, responseHandler: FxAClient10.oauthResponse)
+    }
+
+    open func getProfile(withSessionToken sessionToken: NSData) -> Deferred<Maybe<FxAProfileResponse>> {
+        let keyPair = RSAKeyPair.generate(withModulusSize: 1024)!
+        return self.sign(sessionToken as Data, publicKey: keyPair.publicKey) >>== { signResult in
+            return self.oauthAuthorize(withSessionToken: sessionToken, keyPair: keyPair, certificate: signResult.certificate) >>== { oauthResult in
+
+                let profileURL = self.profileURL.appendingPathComponent("/profile")
+                var mutableURLRequest = URLRequest(url: profileURL)
+                mutableURLRequest.httpMethod = HTTPMethod.get.rawValue
+
+                mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                mutableURLRequest.setValue("Bearer " + oauthResult.accessToken, forHTTPHeaderField: "Authorization")
+
+                return self.makeRequest(mutableURLRequest, responseHandler: FxAClient10.profileResponse)
+            }
+        }
+    }
+
+    open func getAudience(forURL URL: URL) -> String {
+        if let port = URL.port {
+            return "\(URL.scheme!)://\(URL.host!):\(port)"
+        } else {
+            return "\(URL.scheme!)://\(URL.host!)"
+        }
     }
 
     fileprivate func makeRequest<T>(_ request: URLRequest, responseHandler: @escaping (JSON) -> T?) -> Deferred<Maybe<T>> {
@@ -347,7 +591,7 @@ extension FxAClient10: FxALoginClient {
     }
 
     open func keys(_ keyFetchToken: Data) -> Deferred<Maybe<FxAKeysResponse>> {
-        let URL = self.URL.appendingPathComponent("/account/keys")
+        let URL = self.authURL.appendingPathComponent("/account/keys")
         var mutableURLRequest = URLRequest(url: URL)
         mutableURLRequest.httpMethod = HTTPMethod.get.rawValue
 
@@ -368,12 +612,12 @@ extension FxAClient10: FxALoginClient {
             "duration": NSNumber(value: OneDayInMilliseconds), // The maximum the server will allow.
         ]
 
-        let URL = self.URL.appendingPathComponent("/certificate/sign")
-        var mutableURLRequest = URLRequest(url: URL)
+        let url = self.authURL.appendingPathComponent("/certificate/sign")
+        var mutableURLRequest = URLRequest(url: url)
         mutableURLRequest.httpMethod = HTTPMethod.post.rawValue
 
         mutableURLRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        mutableURLRequest.httpBody = JSON(parameters as NSDictionary).stringValue()?.utf8EncodedData
+        mutableURLRequest.httpBody = JSON(parameters as NSDictionary).stringify()?.utf8EncodedData
 
         let salt: Data = Data()
         let contextInfo: Data = FxAClient10.KW("sessionToken")

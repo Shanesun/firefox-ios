@@ -7,7 +7,7 @@ import Shared
 import Storage
 import Deferred
 import SwiftyJSON
-import Telemetry
+import SyncTelemetry
 
 private let log = Logger.syncLogger
 
@@ -88,7 +88,7 @@ struct RepairRequest {
                 ]
             ]
         ]
-        return SyncCommand(value: JSON(object: jsonObj).stringValue()!)
+        return SyncCommand(value: JSON(jsonObj).stringify()!)
     }
 }
 
@@ -295,7 +295,7 @@ class BookmarksRepairRequestor {
                 // So we've sent a request - and don't yet have a response. See if the
                 // client we sent it to has removed it from its list (ie, whether it
                 // has synced since we wrote the request.)
-                return self.remoteClients.getClientWithId(clientID) >>== { client in
+                return self.remoteClients.getClient(guid: clientID) >>== { client in
                     guard let client = client else {
                         // hrmph - the client has disappeared.
                         log.info("previously requested client \(clientID) has vanished - moving to next step")

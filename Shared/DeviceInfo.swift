@@ -8,7 +8,7 @@ open class DeviceInfo {
     // List of device names that don't support advanced visual settings
     static let lowGraphicsQualityModels = ["iPad", "iPad1,1", "iPhone1,1", "iPhone1,2", "iPhone2,1", "iPhone3,1", "iPhone3,2", "iPhone3,3", "iPod1,1", "iPod2,1", "iPod2,2", "iPod3,1", "iPod4,1", "iPad2,1", "iPad2,2", "iPad2,3", "iPad2,4", "iPad3,1", "iPad3,2", "iPad3,3"]
 
-    open static var specificModelName: String {
+    public static var specificModelName: String {
         var systemInfo = utsname()
         uname(&systemInfo)
 
@@ -16,7 +16,7 @@ open class DeviceInfo {
         let mirror = Mirror(reflecting: machine)
         var identifier = ""
 
-        // Parses the string for the model name via NSUTF8StringEncoding, refer to 
+        // Parses the string for the model name via NSUTF8StringEncoding, refer to
         // http://stackoverflow.com/questions/26028918/ios-how-to-determine-iphone-model-in-swift
         for child in mirror.children.enumerated() {
             if let value = child.1.value as? Int8, value != 0 {
@@ -26,27 +26,15 @@ open class DeviceInfo {
         return identifier
     }
 
-    open class func appName() -> String {
-        let localizedDict = Bundle.main.localizedInfoDictionary
-        let infoDict = Bundle.main.infoDictionary
-        let key = "CFBundleDisplayName"
-
-        // E.g., "Fennec Nightly".
-        return localizedDict?[key] as? String ??
-               infoDict?[key] as? String ??
-               "Firefox"
-    }
-
-    // I'd land a test for this, but it turns out it's hardly worthwhile -- both the
-    // app name and the device name are variable, and the format string itself varies
-    // by locale!
+    /// Return the client name, which can be either "Fennec on Stefan's iPod" or simply "Stefan's iPod" if the application display name cannot be obtained.
     open class func defaultClientName() -> String {
-        // E.g., "Sarah's iPhone".
-        let device = UIDevice.current.name
+        let format = NSLocalizedString("%@ on %@", tableName: "Shared", comment: "A brief descriptive name for this app on this device, used for Send Tab and Synced Tabs. The first argument is the app name. The second argument is the device name.")
 
-        let f = NSLocalizedString("%@ on %@", tableName: "Shared", comment: "A brief descriptive name for this app on this device, used for Send Tab and Synced Tabs. The first argument is the app name. The second argument is the device name.")
+        if (ProcessInfo.processInfo.arguments.contains(LaunchArguments.DeviceName)) {
+            return String(format: format, AppInfo.displayName, "iOS")
+        }
 
-        return String(format: f, appName(), device)
+        return String(format: format, AppInfo.displayName, UIDevice.current.name)
     }
 
     open class func clientIdentifier(_ prefs: Prefs) -> String {
@@ -63,7 +51,7 @@ open class DeviceInfo {
     }
 
     open class func isSimulator() -> Bool {
-        return UIDevice.current.model.contains("Simulator")
+        return ProcessInfo.processInfo.environment["SIMULATOR_ROOT"] != nil
     }
 
     open class func isBlurSupported() -> Bool {
@@ -78,9 +66,7 @@ open class DeviceInfo {
     open class func hasConnectivity() -> Bool {
         let status = Reach().connectionStatus()
         switch status {
-        case .online(.wwan):
-            return true
-        case .online(.wiFi):
+        case .online(.wwan), .online(.wiFi):
             return true
         default:
             return false

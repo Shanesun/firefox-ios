@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import Foundation
+import Account
 import Shared
 import SwiftyJSON
 
@@ -11,8 +12,8 @@ import SwiftyJSON
 // a meta/global generated from this will have different syncIDs and will
 // always use this device's engine versions.
 open class EngineConfiguration: Equatable {
-    let enabled: [String]
-    let declined: [String]
+    public let enabled: [String]
+    public let declined: [String]
     public init(enabled: [String], declined: [String]) {
         self.enabled = enabled
         self.declined = declined

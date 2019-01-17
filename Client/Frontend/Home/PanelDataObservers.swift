@@ -12,14 +12,20 @@ private let log = Logger.browserLogger
 
 protocol DataObserver {
     var profile: Profile { get }
-    weak var delegate: DataObserverDelegate? { get set }
-    
-    func invalidate(highlights: Bool)
+    var delegate: DataObserverDelegate? { get set }
+
+    func refreshIfNeeded(forceTopSites topSites: Bool)
 }
 
-@objc protocol DataObserverDelegate: class {
-    func didInvalidateDataSources()
-    func willInvalidateDataSources()
+protocol DataObserverDelegate: AnyObject {
+    func didInvalidateDataSources(refresh forced: Bool, topSitesRefreshed: Bool)
+    func willInvalidateDataSources(forceTopSites topSites: Bool)
+}
+
+// Make these delegate methods optional by providing default implementations
+extension DataObserverDelegate {
+    func didInvalidateDataSources(refresh forced: Bool, topSitesRefreshed: Bool) {}
+    func willInvalidateDataSources(forceTopSites topSites: Bool) {}
 }
 
 open class PanelDataObservers {
@@ -32,44 +38,50 @@ open class PanelDataObservers {
 
 class ActivityStreamDataObserver: DataObserver {
     let profile: Profile
+    let invalidationTime: UInt64
     weak var delegate: DataObserverDelegate?
-    private var invalidationTime = OneMinuteInMilliseconds * 15
-    private var lastInvalidation = Date.now()
 
-    fileprivate let events = [NotificationFirefoxAccountChanged, NotificationProfileDidFinishSyncing, NotificationPrivateDataClearedHistory]
+    fileprivate let events: [Notification.Name] = [.FirefoxAccountChanged, .ProfileDidFinishSyncing, .PrivateDataClearedHistory]
 
     init(profile: Profile) {
         self.profile = profile
         self.profile.history.setTopSitesCacheSize(ActivityStreamTopSiteCacheSize)
-        events.forEach { NotificationCenter.default.addObserver(self, selector: #selector(self.notificationReceived(_:)), name: $0, object: nil) }
+        self.invalidationTime = OneMinuteInMilliseconds * 15
+        events.forEach { NotificationCenter.default.addObserver(self, selector: #selector(self.notificationReceived), name: $0, object: nil) }
     }
 
-    deinit {
-        events.forEach { NotificationCenter.default.removeObserver(self, name: $0, object: nil) }
-    }
-    
-    func invalidate(highlights: Bool) {
-        self.delegate?.willInvalidateDataSources()
-
-        let notify = {
-            self.delegate?.didInvalidateDataSources()
-        }
-        
-        let invalidateTopSites: () -> Success = {
-            self.profile.history.setTopSitesNeedsInvalidation()
-            return self.profile.history.updateTopSitesCacheIfInvalidated() >>> succeed
+    /*
+     refreshIfNeeded will refresh the underlying caches for TopSites.
+     By default this will only refresh topSites if KeyTopSitesCacheIsValid is false
+     */
+    func refreshIfNeeded(forceTopSites topSites: Bool) {
+        guard !profile.isShutdown else {
+            return
         }
 
-        let shouldInvalidate = highlights ? true : (Date.now() - lastInvalidation > invalidationTime)
-        lastInvalidation = shouldInvalidate ? Date.now() : lastInvalidation
-        let query = shouldInvalidate ? [self.profile.recommendations.invalidateHighlights, invalidateTopSites] : [invalidateTopSites]
-        accumulate(query) >>> effect(notify)
+        // KeyTopSitesCacheIsValid is false when we want to invalidate. Thats why this logic is so backwards
+        let shouldInvalidateTopSites = topSites || !(profile.prefs.boolForKey(PrefsKeys.KeyTopSitesCacheIsValid) ?? false)
+        if !shouldInvalidateTopSites {
+            // There is nothing to refresh. Bye
+            return
+        }
+
+        // Flip the `KeyTopSitesCacheIsValid` flag now to prevent subsequent calls to refresh
+        // from re-invalidating the cache.
+        if shouldInvalidateTopSites {
+            self.profile.prefs.setBool(true, forKey: PrefsKeys.KeyTopSitesCacheIsValid)
+        }
+
+        self.delegate?.willInvalidateDataSources(forceTopSites: topSites)
+        self.profile.recommendations.repopulate(invalidateTopSites: shouldInvalidateTopSites).uponQueue(.main) { _ in
+            self.delegate?.didInvalidateDataSources(refresh: topSites, topSitesRefreshed: shouldInvalidateTopSites)
+        }
     }
-    
+
     @objc func notificationReceived(_ notification: Notification) {
         switch notification.name {
-        case NotificationProfileDidFinishSyncing, NotificationFirefoxAccountChanged, NotificationPrivateDataClearedHistory:
-            invalidate(highlights: true)
+        case .ProfileDidFinishSyncing, .FirefoxAccountChanged, .PrivateDataClearedHistory:
+             refreshIfNeeded(forceTopSites: true)
         default:
             log.warning("Received unexpected notification \(notification.name)")
         }

@@ -10,197 +10,63 @@ import Deferred
 fileprivate let log = Logger.syncLogger
 
 extension SQLiteHistory: HistoryRecommendations {
-    public func getHighlights() -> Deferred<Maybe<Cursor<Site>>> {
-        let highlightsProjection = [
-            "historyID",
-            "\(AttachedTableHighlights).cache_key AS cache_key",
-            "url",
-            "\(AttachedTableHighlights).title AS title",
-            "guid",
-            "visitCount",
-            "visitDate",
-            "is_bookmarked"
-        ]
-        let faviconsProjection = ["iconID", "iconURL", "iconType", "iconDate", "iconWidth"]
-        let metadataProjections = [
-            "\(AttachedTablePageMetadata).title AS metadata_title",
-            "media_url",
-            "type",
-            "description",
-            "provider_name"
-        ]
+    static let MaxHistoryRowCount: UInt = 200000
+    static let PruneHistoryRowCount: UInt = 5000
 
-        let allProjection = highlightsProjection + faviconsProjection + metadataProjections
+    // Checks if there are more than the specified number of rows in the
+    // `history` table. This is used as an indicator that `cleanupOldHistory()`
+    // needs to run.
+    func checkIfCleanupIsNeeded(maxHistoryRows: UInt) -> Deferred<Maybe<Bool>> {
+        let sql = "SELECT COUNT(rowid) > \(maxHistoryRows) AS cleanup FROM \(TableHistory)"
+        return self.db.runQueryConcurrently(sql, args: nil, factory: IntFactory) >>== { cursor in
+            guard let cleanup = cursor[0], cleanup > 0 else {
+                return deferMaybe(false)
+            }
 
-        let highlightsHistoryIDs =
-        "SELECT historyID FROM \(AttachedTableHighlights)"
-
-        // Search the history/favicon view with our limited set of highlight IDs
-        // to avoid doing a full table scan on history
-        let faviconSearch =
-        "SELECT * FROM \(ViewHistoryIDsWithWidestFavicons) WHERE id IN (\(highlightsHistoryIDs))"
-
-        let sql =
-        "SELECT \(allProjection.joined(separator: ",")) " +
-        "FROM \(AttachedTableHighlights) " +
-        "LEFT JOIN (\(faviconSearch)) AS f1 ON f1.id = historyID " +
-        "LEFT OUTER JOIN \(AttachedTablePageMetadata) ON " +
-        "\(AttachedTablePageMetadata).cache_key = \(AttachedTableHighlights).cache_key"
-
-        return self.db.runQuery(sql, args: nil, factory: SQLiteHistory.iconHistoryMetadataColumnFactory)
-    }
-
-    public func invalidateHighlights() -> Success {
-        return clearHighlights() >>> populateHighlights
-    }
-
-    public func removeHighlightForURL(_ url: String) -> Success {
-        return self.db.run([("INSERT INTO \(TableActivityStreamBlocklist) (url) VALUES (?)", [url])])
-    }
-
-    public func clearHighlights() -> Success {
-        return self.db.run("DELETE FROM \(AttachedTableHighlights)", withArgs: nil)
-    }
-
-    private func populateHighlights() -> Success {
-        let (query, args) = computeHighlightsQuery()
-
-        // Convert the fetched row into arguments for a bulk insert along with the
-        // generated cache_key value.
-        func argsFrom(row: SDRow) -> Args? {
-            let urlString = row["url"] as! String
-            let cacheKey = SQLiteMetadata.cacheKeyForURL(urlString.asURL!)!
-            return [
-                row["historyID"],
-                cacheKey,
-                urlString,
-                row["title"],
-                row["guid"],
-                row["visitCount"],
-                row["visitDate"],
-                row["is_bookmarked"]
-            ]
+            return deferMaybe(true)
         }
-        
-        // Run the highlights computation query and take the results to bulk insert into the cached highlights table
-        return self.db.runQuery(query, args: args, factory: argsFrom)
-            >>== { highlightRows in
-                let values: [Args] = highlightRows.asArray().flatMap { $0 }
-                let highlightsProjection = [
-                    "historyID",
-                    "cache_key",
-                    "url",
-                    "title",
-                    "guid",
-                    "visitCount",
-                    "visitDate",
-                    "is_bookmarked"
-                ]
+    }
 
-                return self.db.bulkInsert(
-                    AttachedTableHighlights,
-                    op: .InsertOrReplace,
-                    columns: highlightsProjection,
-                    values: values
+    // Deletes the specified number of items from the `history` table and
+    // their corresponding items in the `visits` table. This only gets run
+    // when the `checkIfCleanupIsNeeded()` method returns `true`. It is possible
+    // that a single clean-up operation may not remove enough rows to drop below
+    // the threshold used in `checkIfCleanupIsNeeded()` and therefore, this may
+    // end up running several times until that threshold is crossed.
+    func cleanupOldHistory(numberOfRowsToPrune: UInt) -> [(String, Args?)] {
+        let sql = """
+            DELETE FROM \(TableHistory) WHERE id IN (
+                SELECT siteID
+                FROM \(TableVisits)
+                GROUP BY siteID
+                ORDER BY max(date) ASC
+                LIMIT \(numberOfRowsToPrune)
             )
+            """
+        return [(sql, nil)]
+    }
+
+    public func repopulate(invalidateTopSites shouldInvalidateTopSites: Bool) -> Success {
+        var queries: [(String, Args?)] = []
+
+        func runQueries() -> Success {
+            if shouldInvalidateTopSites {
+                queries.append(contentsOf: self.refreshTopSitesQuery())
+            }
+            return self.db.run(queries)
+        }
+
+        // Only check for and perform cleanup operation if we're already invalidating a cache.
+        if shouldInvalidateTopSites {
+            return checkIfCleanupIsNeeded(maxHistoryRows: SQLiteHistory.MaxHistoryRowCount) >>== { doCleanup in
+                if doCleanup {
+                    queries.append(contentsOf: self.cleanupOldHistory(numberOfRowsToPrune: SQLiteHistory.PruneHistoryRowCount))
+                }
+                return runQueries()
+            }
+        } else {
+            return runQueries()
         }
     }
 
-    public func getRecentBookmarks(_ limit: Int = 3) -> Deferred<Maybe<Cursor<Site>>> {
-        let fiveDaysAgo: UInt64 = Date.now() - (OneDayInMilliseconds * 5) // The data is joined with a millisecond not a microsecond one. (History)
-
-        let subQuerySiteProjection = "historyID, url, siteTitle, guid, is_bookmarked"
-        let removeMultipleDomainsSubquery =
-            " INNER JOIN (SELECT \(ViewHistoryVisits).domain_id AS domain_id" +
-            " FROM \(ViewHistoryVisits)" +
-            " GROUP BY \(ViewHistoryVisits).domain_id) AS domains ON domains.domain_id = \(TableHistory).domain_id"
-
-        let bookmarkHighlights =
-            "SELECT \(subQuerySiteProjection) FROM (" +
-                "   SELECT \(TableHistory).id AS historyID, \(TableHistory).url AS url, \(TableHistory).title AS siteTitle, guid, \(TableHistory).domain_id, NULL AS visitDate, 1 AS is_bookmarked" +
-                "   FROM (" +
-                "       SELECT bmkUri" +
-                "       FROM \(ViewBookmarksLocalOnMirror)" +
-                "       WHERE \(ViewBookmarksLocalOnMirror).server_modified > ? OR \(ViewBookmarksLocalOnMirror).local_modified > ?" +
-                "   )" +
-                "   LEFT JOIN \(TableHistory) ON \(TableHistory).url = bmkUri" + removeMultipleDomainsSubquery +
-                "   WHERE \(TableHistory).title NOT NULL and \(TableHistory).title != '' AND url NOT IN" +
-                "       (SELECT \(TableActivityStreamBlocklist).url FROM \(TableActivityStreamBlocklist))" +
-                "   LIMIT \(limit)" +
-            ")"
-        
-        let siteProjection = subQuerySiteProjection.replacingOccurrences(of: "siteTitle", with: "siteTitle AS title")
-        let highlightsQuery =
-            "SELECT \(siteProjection), iconID, iconURL, iconType, iconDate, iconWidth, \(AttachedTablePageMetadata).title AS metadata_title, media_url, type, description, provider_name " +
-                "FROM (\(bookmarkHighlights) ) " +
-                "LEFT JOIN \(ViewHistoryIDsWithWidestFavicons) ON \(ViewHistoryIDsWithWidestFavicons).id = historyID " +
-                "LEFT OUTER JOIN \(AttachedTablePageMetadata) ON \(AttachedTablePageMetadata).site_url = url " +
-        "GROUP BY url"
-        let args = [fiveDaysAgo, fiveDaysAgo] as Args
-        return self.db.runQuery(highlightsQuery, args: args, factory: SQLiteHistory.iconHistoryMetadataColumnFactory)
-    }
-
-    private func computeHighlightsQuery() -> (String, Args) {
-        let limit = 8
-
-        let microsecondsPerMinute: UInt64 = 60_000_000 // 1000 * 1000 * 60
-        let now = Date.nowMicroseconds()
-        let thirtyMinutesAgo: UInt64 = now - 30 * microsecondsPerMinute
-
-        let blacklistedHosts: Args = [
-            "google.com",
-            "google.ca",
-            "calendar.google.com",
-            "mail.google.com",
-            "mail.yahoo.com",
-            "search.yahoo.com",
-            "localhost",
-            "t.co"
-        ]
-
-        let blacklistSubquery = "SELECT \(TableDomains).id FROM \(TableDomains) WHERE \(TableDomains).domain IN " + BrowserDB.varlist(blacklistedHosts.count)
-        let removeMultipleDomainsSubquery =
-            "   INNER JOIN (SELECT \(ViewHistoryVisits).domain_id AS domain_id, MAX(\(ViewHistoryVisits).visitDate) AS visit_date" +
-            "   FROM \(ViewHistoryVisits)" +
-            "   GROUP BY \(ViewHistoryVisits).domain_id) AS domains ON domains.domain_id = \(TableHistory).domain_id AND visitDate = domains.visit_date"
-
-        let subQuerySiteProjection = "historyID, url, siteTitle, guid, visitCount, visitDate, is_bookmarked, visitCount * icon_url_score * media_url_score AS score"
-        let nonRecentHistory =
-            "SELECT \(subQuerySiteProjection) FROM (" +
-            "   SELECT \(TableHistory).id as historyID, url, \(TableHistory).title AS siteTitle, guid, visitDate, \(TableHistory).domain_id," +
-            "       (SELECT COUNT(1) FROM \(TableVisits) WHERE s = \(TableVisits).siteID) AS visitCount," +
-            "       (SELECT COUNT(1) FROM \(ViewBookmarksLocalOnMirror) WHERE \(ViewBookmarksLocalOnMirror).bmkUri == url) AS is_bookmarked," +
-            "     CASE WHEN iconURL IS NULL THEN 1 ELSE 2 END AS icon_url_score," +
-            "     CASE WHEN media_url IS NULL THEN 1 ELSE 4 END AS media_url_score" +
-            "   FROM (" +
-            "       SELECT siteID AS s, MAX(date) AS visitDate" +
-            "       FROM \(TableVisits)" +
-            "       WHERE date < ?" +
-            "       GROUP BY siteID" +
-            "       ORDER BY visitDate DESC" +
-            "   )" +
-            "   LEFT JOIN \(TableHistory) ON \(TableHistory).id = s" +
-                removeMultipleDomainsSubquery +
-            "   LEFT OUTER JOIN \(ViewHistoryIDsWithWidestFavicons) ON" +
-            "       \(ViewHistoryIDsWithWidestFavicons).id = \(TableHistory).id" +
-            "   LEFT OUTER JOIN \(AttachedTablePageMetadata) ON" +
-            "       \(AttachedTablePageMetadata).site_url = \(TableHistory).url" +
-            "   WHERE visitCount <= 3 AND \(TableHistory).title NOT NULL AND \(TableHistory).title != '' AND is_bookmarked == 0 AND url NOT IN" +
-            "       (SELECT url FROM \(TableActivityStreamBlocklist))" +
-            "        AND \(TableHistory).domain_id NOT IN ("
-                    + blacklistSubquery + ")" +
-            ")"
-
-        let siteProjection = subQuerySiteProjection
-            .replacingOccurrences(of: "siteTitle", with: "siteTitle AS title")
-            .replacingOccurrences(of: "visitCount * icon_url_score * media_url_score AS score", with: "score")
-        let highlightsQuery =
-            "SELECT \(siteProjection) " +
-            "FROM ( \(nonRecentHistory) ) " +
-            "GROUP BY url " +
-            "ORDER BY score DESC " +
-            "LIMIT \(limit)"
-        let args: Args = [thirtyMinutesAgo] + blacklistedHosts
-        return (highlightsQuery, args)
-    }
 }

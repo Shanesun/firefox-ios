@@ -24,35 +24,33 @@ public protocol BrowserHistory {
     @discardableResult func removeHistoryForURL(_ url: String) -> Success
     func removeSiteFromTopSites(_ site: Site) -> Success
     func removeHostFromTopSites(_ host: String) -> Success
-
-    func getSitesByFrecencyWithHistoryLimit(_ limit: Int) -> Deferred<Maybe<Cursor<Site>>>
-    func getSitesByFrecencyWithHistoryLimit(_ limit: Int, whereURLContains filter: String) -> Deferred<Maybe<Cursor<Site>>>
-    func getSitesByFrecencyWithHistoryLimit(_ limit: Int, bookmarksLimit: Int, whereURLContains filter: String) -> Deferred<Maybe<Cursor<Site>>>
-    func getSitesByLastVisit(_ limit: Int) -> Deferred<Maybe<Cursor<Site>>>
-
+    func getFrecentHistory() -> FrecentHistory
+    func getSitesByLastVisit(limit: Int, offset: Int) -> Deferred<Maybe<Cursor<Site>>>
     func getTopSitesWithLimit(_ limit: Int) -> Deferred<Maybe<Cursor<Site>>>
     func setTopSitesNeedsInvalidation()
-    func updateTopSitesCacheIfInvalidated() -> Deferred<Maybe<Bool>>
     func setTopSitesCacheSize(_ size: Int32)
     func clearTopSitesCache() -> Success
-    @discardableResult func refreshTopSitesCache() -> Success
-    func areTopSitesDirty(withLimit limit: Int) -> Deferred<Maybe<Bool>>
 
     // Pinning top sites
     func removeFromPinnedTopSites(_ site: Site) -> Success
     func addPinnedTopSite(_ site: Site) -> Success
     func getPinnedTopSites() -> Deferred<Maybe<Cursor<Site>>>
+    func isPinnedTopSite(_ url: String) -> Deferred<Maybe<Bool>>
+}
+
+/**
+ * An interface for fast repeated frecency queries.
+ */
+public protocol FrecentHistory {
+    func getSites(whereURLContains filter: String?, historyLimit limit: Int, bookmarksLimit: Int) -> Deferred<Maybe<Cursor<Site>>>
+    func updateTopSitesCacheQuery() -> (String, Args?)
 }
 
 /**
  * An interface for accessing recommendation content from Storage
  */
 public protocol HistoryRecommendations {
-    func getHighlights() -> Deferred<Maybe<Cursor<Site>>>
-    func getRecentBookmarks(_ limit: Int) -> Deferred<Maybe<Cursor<Site>>>
-
-    func removeHighlightForURL(_ url: String) -> Success
-    func invalidateHighlights() -> Success
+    func repopulate(invalidateTopSites shouldInvalidateTopSites: Bool) -> Success
 }
 
 /**
@@ -95,9 +93,9 @@ public protocol SyncableHistory: AccountRemovalDelegate {
 // TODO: integrate Site with this.
 
 open class Place {
-    open let guid: GUID
-    open let url: String
-    open let title: String
+    public let guid: GUID
+    public let url: String
+    public let title: String
 
     public init(guid: GUID, url: String, title: String) {
         self.guid = guid

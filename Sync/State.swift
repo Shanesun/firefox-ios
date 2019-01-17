@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import Foundation
+import Account
 import Shared
 import XCGLogger
 import SwiftKeychainWrapper
@@ -22,7 +23,7 @@ public struct Fetched<T: Equatable>: Equatable {
     let timestamp: Timestamp
 }
 
-public func ==<T: Equatable>(lhs: Fetched<T>, rhs: Fetched<T>) -> Bool {
+public func ==<T>(lhs: Fetched<T>, rhs: Fetched<T>) -> Bool {
     return lhs.timestamp == rhs.timestamp &&
            lhs.value == rhs.value
 }
@@ -138,11 +139,8 @@ private let PrefClientName = "clientName"
 private let PrefClientGUID = "clientGUID"
 private let PrefHashedUID = "hashedUID"
 private let PrefEngineConfiguration = "engineConfiguration"
-
-/*
- * Keys for values that originate from prefs set when the account is first established.
- */
-public let PrefDeviceRegistration = "deviceRegistration"
+private let PrefEnginesEnablements = "enginesEnablements"
+private let PrefDeviceID = "deviceID"
 
 class PrefsBackoffStorage: BackoffStorage {
     let prefs: Prefs
@@ -202,6 +200,8 @@ open class Scratchpad {
         fileprivate var keyLabel: String
         var localCommands: Set<LocalCommand>
         var engineConfiguration: EngineConfiguration?
+        // Engines that were manually enabled/disabled by the user since our last sync.
+        var enginesEnablements: [String: Bool]?
         var clientGUID: String
         var clientName: String
         var fxaDeviceId: String
@@ -218,6 +218,7 @@ open class Scratchpad {
             self.keyLabel = p.keyLabel
             self.localCommands = p.localCommands
             self.engineConfiguration = p.engineConfiguration
+            self.enginesEnablements = p.enginesEnablements
             self.clientGUID = p.clientGUID
             self.clientName = p.clientName
             self.fxaDeviceId = p.fxaDeviceId
@@ -274,6 +275,11 @@ open class Scratchpad {
             return self
         }
 
+        open func clearEnginesEnablements() -> Builder {
+            self.enginesEnablements = nil
+            return self
+        }
+
         open func setGlobal(_ global: Fetched<MetaGlobal>?) -> Builder {
             self.global = global
             if let global = global {
@@ -296,6 +302,7 @@ open class Scratchpad {
                     keyLabel: self.keyLabel,
                     localCommands: self.localCommands,
                     engines: self.engineConfiguration,
+                    enginesEnablements: self.enginesEnablements,
                     clientGUID: self.clientGUID,
                     clientName: self.clientName,
                     fxaDeviceId: self.fxaDeviceId,
@@ -348,6 +355,7 @@ open class Scratchpad {
 
     // Enablement states.
     let engineConfiguration: EngineConfiguration?
+    let enginesEnablements: [String: Bool]?
 
     // What's our client name?
     let clientName: String
@@ -371,6 +379,7 @@ open class Scratchpad {
          keyLabel: String,
          localCommands: Set<LocalCommand>,
          engines: EngineConfiguration?,
+         enginesEnablements: [String: Bool]?,
          clientGUID: String,
          clientName: String,
          fxaDeviceId: String,
@@ -384,6 +393,7 @@ open class Scratchpad {
         self.keyLabel = keyLabel
         self.global = m
         self.engineConfiguration = engines
+        self.enginesEnablements = enginesEnablements
         self.localCommands = localCommands
         self.clientGUID = clientGUID
         self.clientName = clientName
@@ -401,17 +411,12 @@ open class Scratchpad {
         self.keyLabel = Bytes.generateGUID()
         self.global = nil
         self.engineConfiguration = nil
+        self.enginesEnablements = nil
         self.localCommands = Set()
         self.clientGUID = Bytes.generateGUID()
         self.clientName = DeviceInfo.defaultClientName()
 
-        self.fxaDeviceId = {
-            guard let string = prefs.stringForKey(PrefDeviceRegistration) else {
-                return nil
-            }
-            let json = JSON(parseJSON: string)
-            return json["id"].string
-        }() ?? "unknown_fxaDeviceId"
+        self.fxaDeviceId = "unknown_fxaDeviceId"
 
         self.hashedUID = nil
     }
@@ -444,7 +449,9 @@ open class Scratchpad {
         if let keyLabel = prefs.stringForKey(PrefKeyLabel) {
             b.keyLabel = keyLabel
             if let ckTS = prefs.unsignedLongForKey(PrefKeysTS) {
-                if let keys = KeychainWrapper.sharedAppContainerKeychain.string(forKey: "keys." + keyLabel) {
+                let key = "keys." + keyLabel
+                KeychainWrapper.sharedAppContainerKeychain.ensureStringItemAccessibility(.afterFirstUnlock, forKey: key)
+                if let keys = KeychainWrapper.sharedAppContainerKeychain.string(forKey: key) {
                     // We serialize as JSON.
                     let keys = Keys(payload: KeysPayload(keys))
                     if keys.valid {
@@ -471,8 +478,26 @@ open class Scratchpad {
 
         b.hashedUID = prefs.stringForKey(PrefHashedUID)
 
+        b.fxaDeviceId = prefs.stringForKey(PrefDeviceID) ?? {
+            // Migrate from previous way of storing device id.
+            // This code will only be run once – the id will be stored
+            // in PrefDeviceID.
+            let PrefDeviceRegistration = "deviceRegistration"
+            if let string = prefs.stringForKey(PrefDeviceRegistration) {
+                let json = JSON(parseJSON: string)
+                if let id = json["id"].string {
+                    return id
+                }
+                prefs.removeObjectForKey(PrefDeviceRegistration)
+            }
+            // This is run the first time we sync with a new account.
+            // It will be replaced by a real fxaDeviceId, from account.deviceRegistration?.id.
+            log.warning("No value found in prefs for fxaDeviceId! Will overwrite on first sync")
+            return "unknown_fxaDeviceId"
+        }()
+
         if let localCommands: [String] = prefs.stringArrayForKey(PrefLocalCommands) {
-            b.localCommands = Set(localCommands.flatMap({LocalCommand.fromJSON(JSON(parseJSON: $0))}))
+            b.localCommands = Set(localCommands.compactMap({LocalCommand.fromJSON(JSON(parseJSON: $0))}))
         }
 
         if let engineConfigurationString = prefs.stringForKey(PrefEngineConfiguration) {
@@ -481,6 +506,10 @@ open class Scratchpad {
             } else {
                 log.error("Invalid engineConfiguration found in prefs. Discarding.")
             }
+        }
+
+        if let enginesEnablements = prefs.dictionaryForKey(PrefEnginesEnablements) {
+            b.enginesEnablements = enginesEnablements as? [String: Bool]
         }
 
         return b.build()
@@ -526,7 +555,7 @@ open class Scratchpad {
         prefs.setInt(1, forKey: PrefVersion)
         if let global = global {
             prefs.setLong(global.timestamp, forKey: PrefGlobalTS)
-            prefs.setString(global.value.asPayload().json.stringValue()!, forKey: PrefGlobal)
+            prefs.setString(global.value.asPayload().json.stringify()!, forKey: PrefGlobal)
         } else {
             prefs.removeObjectForKey(PrefGlobal)
             prefs.removeObjectForKey(PrefGlobalTS)
@@ -535,14 +564,12 @@ open class Scratchpad {
         // We store the meat of your keys in the Keychain, using a random identifier that we persist in prefs.
         prefs.setString(self.keyLabel, forKey: PrefKeyLabel)
         if let keys = self.keys,
-            let payload = keys.value.asPayload().json.stringValue() {
+            let payload = keys.value.asPayload().json.stringify() {
             let label = "keys." + self.keyLabel
             log.debug("Storing keys in Keychain with label \(label).")
             prefs.setString(self.keyLabel, forKey: PrefKeyLabel)
             prefs.setLong(keys.timestamp, forKey: PrefKeysTS)
-
-            // TODO: I could have sworn that we could specify kSecAttrAccessibleAfterFirstUnlock here.
-            KeychainWrapper.sharedAppContainerKeychain.set(payload, forKey: label)
+            KeychainWrapper.sharedAppContainerKeychain.set(payload, forKey: label, withAccessibility: .afterFirstUnlock)
         } else {
             log.debug("Removing keys from Keychain.")
             KeychainWrapper.sharedAppContainerKeychain.removeObject(forKey: self.keyLabel)
@@ -555,13 +582,21 @@ open class Scratchpad {
             prefs.setString(uid, forKey: PrefHashedUID)
         }
 
-        let localCommands: [String] = Array(self.localCommands).map({$0.toJSON().stringValue()!})
+        prefs.setString(fxaDeviceId, forKey: PrefDeviceID)
+
+        let localCommands: [String] = Array(self.localCommands).map({$0.toJSON().stringify()!})
         prefs.setObject(localCommands, forKey: PrefLocalCommands)
 
         if let engineConfiguration = self.engineConfiguration {
-            prefs.setString(engineConfiguration.toJSON().stringValue()!, forKey: PrefEngineConfiguration)
+            prefs.setString(engineConfiguration.toJSON().stringify()!, forKey: PrefEngineConfiguration)
         } else {
             prefs.removeObjectForKey(PrefEngineConfiguration)
+        }
+
+        if let enginesEnablements = self.enginesEnablements {
+            prefs.setObject(enginesEnablements, forKey: PrefEnginesEnablements)
+        } else {
+            prefs.removeObjectForKey(PrefEnginesEnablements)
         }
 
         return self

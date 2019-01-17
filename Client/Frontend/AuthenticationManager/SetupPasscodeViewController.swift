@@ -6,8 +6,6 @@ import Foundation
 import Shared
 import SwiftKeychainWrapper
 
-let NotificationPasscodeDidCreate   = "NotificationPasscodeDidCreate"
-
 /// Displayed to the user when setting up a passcode.
 class SetupPasscodeViewController: PagingPasscodeViewController, PasscodeInputViewDelegate {
     fileprivate var confirmCode: String?
@@ -16,15 +14,15 @@ class SetupPasscodeViewController: PagingPasscodeViewController, PasscodeInputVi
         super.init()
         self.title = AuthenticationStrings.setPasscode
         self.panes = [
-            PasscodePane(title: AuthenticationStrings.enterAPasscode),
-            PasscodePane(title: AuthenticationStrings.reenterPasscode),
+            PasscodePane(title: AuthenticationStrings.enterAPasscode, passcodeSize: 6),
+            PasscodePane(title: AuthenticationStrings.reenterPasscode, passcodeSize: 6),
         ]
     }
-    
+
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         panes.forEach { $0.codeInputView.delegate = self }
@@ -62,7 +60,7 @@ class SetupPasscodeViewController: PagingPasscodeViewController, PasscodeInputVi
 
     fileprivate func createPasscodeWithCode(_ code: String) {
         KeychainWrapper.sharedAppContainerKeychain.setAuthenticationInfo(AuthenticationKeychainInfo(passcode: code))
-        let notificationCenter = NotificationCenter.default
-        notificationCenter.post(name: Notification.Name(rawValue: NotificationPasscodeDidCreate), object: nil)
+
+        NotificationCenter.default.post(name: .PasscodeDidCreate, object: nil)
     }
 }

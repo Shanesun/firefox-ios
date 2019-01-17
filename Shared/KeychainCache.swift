@@ -14,8 +14,8 @@ public protocol JSONLiteralConvertible {
 }
 
 open class KeychainCache<T: JSONLiteralConvertible> {
-    open let branch: String
-    open let label: String
+    public let branch: String
+    public let label: String
 
     open var value: T? {
         didSet {
@@ -31,7 +31,9 @@ open class KeychainCache<T: JSONLiteralConvertible> {
 
     open class func fromBranch(_ branch: String, withLabel label: String?, withDefault defaultValue: T? = nil, factory: (JSON) -> T?) -> KeychainCache<T> {
         if let l = label {
-            if let s = KeychainWrapper.sharedAppContainerKeychain.string(forKey: "\(branch).\(l)") {
+            let key = "\(branch).\(l)"
+            KeychainWrapper.sharedAppContainerKeychain.ensureStringItemAccessibility(.afterFirstUnlock, forKey: key)
+            if let s = KeychainWrapper.sharedAppContainerKeychain.string(forKey: key) {
                 if let t = factory(JSON(parseJSON: s)) {
                     log.info("Read \(branch) from Keychain with label \(branch).\(l).")
                     return KeychainCache(branch: branch, label: l, value: t)
@@ -54,8 +56,8 @@ open class KeychainCache<T: JSONLiteralConvertible> {
         log.info("Storing \(self.branch) in Keychain with label \(self.branch).\(self.label).")
         // TODO: PII logging.
         if let value = value,
-            let jsonString = value.asJSON().stringValue() {
-            KeychainWrapper.sharedAppContainerKeychain.set(jsonString, forKey: "\(branch).\(label)")
+            let jsonString = value.asJSON().stringify() {
+            KeychainWrapper.sharedAppContainerKeychain.set(jsonString, forKey: "\(branch).\(label)", withAccessibility: .afterFirstUnlock)
         } else {
             KeychainWrapper.sharedAppContainerKeychain.removeObject(forKey: "\(branch).\(label)")
         }
